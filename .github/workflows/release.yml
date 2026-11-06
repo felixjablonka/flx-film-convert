@@ -1,0 +1,55 @@
+name: Release
+
+# A tag such as v0.1.0 builds the app's disk image and drafts a release with
+# it, to be checked and published by hand. Running it by hand (Actions >
+# Release > Run workflow) builds the same as a trial and keeps the disk image
+# as the run's artifact, with no release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    # macOS 26 and its Xcode 26, the SDK the app is developed with: SwiftUI
+    # behaves as the SDK an app is built with. Named, not macos-latest, so a
+    # new default cannot change the SDK unnoticed.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build the disk image
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export VERSION="${GITHUB_REF_NAME#v}"; fi
+          ./build.sh dmg
+          cd build
+          shasum -a 256 "FLX Film Convert.dmg" > "FLX Film Convert.dmg.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: |
+            build/FLX Film Convert.dmg
+            build/FLX Film Convert.dmg.sha256
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: mac
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac
+          path: assets
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd assets
+          ls -la
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" * \
+            --draft --generate-notes --title "FLX Film Convert ${GITHUB_REF_NAME#v}"

@@ -1,0 +1,9 @@
+# Build output
+build/
+*.app
+engine.new/
+# Prints and sheets from the prototype runs
+prototype/
+.DS_Store
+# Frames of the bare scanning light kept beside the project (raw files)
+Easy35 Light/
