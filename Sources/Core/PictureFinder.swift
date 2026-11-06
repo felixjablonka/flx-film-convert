@@ -47,7 +47,9 @@ enum PictureFinder {
         let scan = full.reduced(by: max(1, Int((Double(max(full.width, full.height)) / 2048).rounded())))
         let sw = scan.width, sh = scan.height
         guard sw > 64, sh > 64 else { return nil }
-        let vertical = field?.vertical ?? (sh > sw)
+        // The long edges' direction: the field's, where its strips lie along
+        // them, not where they are the gaps between frames.
+        let vertical = field.map { $0.edges == .long ? $0.vertical : !$0.vertical } ?? (sh > sw)
         // Worked with the long edges running along x: w along, h across.
         let w = vertical ? sh : sw, h = vertical ? sw : sh
 
@@ -68,16 +70,24 @@ enum PictureFinder {
         // The rebate strips' tilt and where they cross the middle of the frame.
         var tilt = 0.0
         var nearStrip: Double?, farStrip: Double?
-        if let f = field {
+        // A stand-in for an edge without clean rebate says little of where
+        // that edge is: it is looked for all the way out from it.
+        var nearStandIn = false, farStandIn = false
+        if let f = field, f.edges == .long {
+            // A stand-in for a missing edge runs parallel to the strip found.
             let slope = { (s: RebateField.Strip) in (s.c1 - s.c0) / (s.a1 - s.a0) * Double(h) / Double(w) }
-            // A mirrored stand-in for a missing edge leans the other way.
-            switch f.onlyEdge {
-            case nil: tilt = atan((slope(f.near) + slope(f.far)) / 2)
-            case (f.vertical ? "left" : "top")?: tilt = atan(slope(f.near))
-            default: tilt = atan(slope(f.far))
-            }
+            tilt = atan((slope(f.near) + slope(f.far)) / 2)
+            // Where the strips cross the middle, the stand-in for a missing
+            // edge's too: the edge is looked for near it.
             nearStrip = f.near.across(0.5) * Double(h)
             farStrip = f.far.across(0.5) * Double(h)
+            nearStandIn = f.onlyEdge == f.farName
+            farStandIn = f.onlyEdge == f.nearName
+        } else if let f = field {
+            // The gaps between frames run across the long edges: turned with
+            // the frame, they lean the other way.
+            let slope = { (s: RebateField.Strip) in (s.c1 - s.c0) / (s.a1 - s.a0) * Double(w) / Double(h) }
+            tilt = -atan((slope(f.near) + slope(f.far)) / 2)
         }
 
         var top = 0.0, bottom = Double(h - 1), left = 0.0, right = Double(w - 1)
@@ -89,10 +99,10 @@ enum PictureFinder {
             let along = Int(0.15 * Double(w))..<Int(0.85 * Double(w))
             // From a little outside the strip, in case the rebate finder took a
             // flat band of the picture next to the rebate for it.
-            let nearLo = nearStrip.map { Int($0 - 0.05 * Double(h)) } ?? 0
+            let nearLo = nearStandIn ? 0 : nearStrip.map { Int($0 - 0.05 * Double(h)) } ?? 0
             let nearHi = nearStrip.map { Int($0 + 0.08 * Double(h)) } ?? Int(0.35 * Double(h))
             let farLo = farStrip.map { Int($0 - 0.08 * Double(h)) } ?? Int(0.65 * Double(h))
-            let farHi = farStrip.map { Int($0 + 0.05 * Double(h)) + 1 } ?? h
+            let farHi = farStandIn ? h : farStrip.map { Int($0 + 0.05 * Double(h)) + 1 } ?? h
             let t = level.edgeAcross(columns: along, in: nearLo..<nearHi, inward: 1)
             let b = level.edgeAcross(columns: along, in: farLo..<farHi, inward: -1)
             top = t ?? nearStrip.map { $0 + (field?.near.half ?? 0) * Double(h) } ?? 0
@@ -116,8 +126,10 @@ enum PictureFinder {
             guard pass < 2 else { break }
             var fits: [(slope: Double, weight: Double)] = []
             edgeSlopes = []
-            for (edge, inward) in [(t, 1), (b, -1)] {
-                guard let e = edge else { continue }
+            // An edge without clean rebate of its own (a stand-in) is the less
+            // sure one: the tilt comes from the other.
+            for (edge, inward, standIn) in [(t, 1, nearStandIn), (b, -1, farStandIn)] {
+                guard let e = edge, !standIn else { continue }
                 let window = Int(e) - 12..<Int(e) + 13
                 var xs: [Double] = [], ys: [Double] = []
                 for j in 0..<8 {
@@ -191,12 +203,26 @@ enum PictureFinder {
         }
 
         /// A long edge: a row where the columns `columns` step up, going
-        /// `inward` (+1 down, -1 up), out of flat base.
+        /// `inward` (+1 down, -1 up), out of flat base. Failing that, out of
+        /// rebate that light spread from a dense picture across the gate's
+        /// edge has fogged: a clear step, and a straight one, the same in at
+        /// least three of the four quarters of the columns.
         func edgeAcross(columns: Range<Int>, in window: Range<Int>, inward: Int) -> Double? {
             let cols = Array(max(columns.lowerBound, 0)..<min(columns.upperBound, w))
-            return PictureFinder.edge(lines: cols.count, positions: h, in: window, inward: inward, outside: 8) { l, p in
-                pixels[p * w + cols[l]]
+            func find(_ cs: ArraySlice<Int>, _ window: Range<Int>, fogged: Bool) -> Double? {
+                let cs = Array(cs)
+                return PictureFinder.edge(lines: cs.count, positions: h, in: window, inward: inward, outside: 8,
+                                          fogged: fogged) { l, p in pixels[p * w + cs[l]] }
             }
+            if let e = find(cols[...], window, fogged: false) { return e }
+            guard let e = find(cols[...], window, fogged: true) else { return nil }
+            let q = cols.count / 4
+            guard q >= 8 else { return nil }
+            let near = Int(e) - 6..<Int(e) + 7
+            let agree = (0..<4).filter { i in
+                find(cols[(i * q)..<((i + 1) * q)], near, fogged: true).map { abs($0 - e) <= 3 } ?? false
+            }.count
+            return agree >= 3 ? e : nil
         }
 
         /// A frame end: a column where the rows `rows` step up, going
@@ -248,9 +274,12 @@ enum PictureFinder {
     /// most) and within -0.15 to 0.2 D of the base. Of those, the one whose
     /// outside is flattest, as nothing on the film is flatter than bare base;
     /// placed where the median profile is steepest, to a fraction of a
-    /// position.
+    /// position. `fogged`: out of rebate fogged next to a dense picture, up to
+    /// 0.6 D over the base and sloping (a median change of 0.05 D), by a step
+    /// of 0.15 D at least.
     fileprivate static func edge(lines n: Int, positions m: Int, in window: Range<Int>, inward: Int, outside ow: Int,
-                                 value: (Int, Int) -> Float) -> Double? {
+                                 fogged: Bool = false, value: (Int, Int) -> Float) -> Double? {
+        let (maxOut, maxFlat, minStep): (Float, Float, Float) = fogged ? (0.6, 0.05, 0.15) : (0.2, 0.015, 0.02)
         let k = 3
         guard n >= 8 else { return nil }
         func median(_ v: [Float]) -> Float? {
@@ -276,10 +305,10 @@ enum PictureFinder {
             let outs = inward > 0 ? (p - k - ow)..<(p - k) : (p + k + 1)..<(p + k + 1 + ow)
             // Bare base: not denser than 0.2 D over it, nor bare light past the
             // film's end, which reads 0.6 D or so under it.
-            guard let out = median(outs.map { level[$0 - lo] }), out <= 0.2, out >= -0.15,
-                  let flat = median(outs.map { flatness[$0 - lo] }), flat <= 0.015, flat < (best?.flat ?? .infinity),
+            guard let out = median(outs.map { level[$0 - lo] }), out <= maxOut, out >= -0.15,
+                  let flat = median(outs.map { flatness[$0 - lo] }), flat <= maxFlat, flat < (best?.flat ?? .infinity),
                   let step = median((0..<n).map { (value($0, p + k) - value($0, p - k)) * Float(inward) }),
-                  step >= 0.02 else { continue }
+                  step >= minStep else { continue }
             best = (p, flat)
         }
         guard let p = best?.p else { return nil }

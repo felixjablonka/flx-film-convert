@@ -83,7 +83,8 @@ To build on a newer FLX Film Lab, run `./sync-engine.sh PATH`, with PATH a check
 ## Scanning
 
 - Show both long edges of the film: the rebate along them is the reference. Sprocket holes may be in
-  the frame; they are left out. When only one edge shows, it stands in for both.
+  the frame; they are left out. When only one edge shows, it stands in for both, and when neither
+  shows clean rebate, the gap between frames at a short end serves.
 - Expose so the rebate is just below clipping.
 - The light's colour temperature hardly matters: the rebate cancels it, and a print changes little
   for any light from 2800 to 6500 K.
@@ -110,7 +111,7 @@ build/flxconvert scan.NEF print.jpg --film kodak_portra_400
 
 Options: `--paper STOCK`, `--exposure STOPS`, `--grade R`, `--filter-y CC`, `--filter-m CC`,
 `--pick x0,x1,y0,y1` (a rebate picked by hand, in frame fractions), `--turns N`, `--size PX`,
-`--sharpness K`, `--radius PX`, `--masking 0-1`, `--clahe 0-1`, and for the metadata `--camera`,
+`--sharpness K` (1 is 100%, the default), `--radius PX`, `--masking 0-1`, `--clahe 0-1`, and for the metadata `--camera`,
 `--lens`, `--date YYYY-MM-DD`, `--ei N` and `--notes`. `flxconvert --read-metadata FILE` shows what a
 file says about itself.
 

@@ -197,7 +197,12 @@ final class Pipeline {
                 switch found {
                 case .success(let f):
                     base = .field(f)
-                    out.baseNote = f.onlyEdge.map { "From the rebate along the \($0) edge only (the other shows none), taken to fall off the same way. " } ?? "From the rebate along both edges. "
+                    switch (f.edges, f.onlyEdge) {
+                    case (.long, nil): out.baseNote = "From the rebate along both edges. "
+                    case (.long, let edge?): out.baseNote = "From the rebate along the \(edge) edge only (the other shows none), taken to fall off the same way. "
+                    case (.short, nil): out.baseNote = "From the gaps between frames at both ends: neither long edge shows clean rebate. "
+                    case (.short, let end?): out.baseNote = "From the gap between frames at the \(end) end only: neither long edge shows clean rebate. "
+                    }
                     out.baseNote += String(format: flatKey.isEmpty ? "The light falls off %.2f D across the frame."
                                                                     : "What falloff is left: %.2f D across the frame.", f.falloff)
                 case .failure(let e):

@@ -59,6 +59,6 @@ NegPy is GPLv3.
 
 ## The app icon and the screenshots
 
-`Resources/AppIcon.icns` and `docs/images/icon.png` are © Felix Jablonka, all rights reserved.
-Neither the GPLv3 nor CC BY-SA covers them; a fork needs its own icon. The same holds for the
+`Resources/AppIcon.icns`, `docs/images/icon.png` and `tools/icon/social-preview.png` are © Felix
+Jablonka, all rights reserved. Neither the GPLv3 nor CC BY-SA covers them; a fork needs its own icon. The same holds for the
 photographs in the screenshots, `docs/images/overview.jpg`, `scan.jpg` and `loupe.jpg`.

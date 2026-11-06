@@ -478,6 +478,7 @@ struct DetailSection: View {
     var body: some View {
         PanelSection("Detail", footer: "Both work on the print's lightness alone: the film's colour stays as it is. The radius is in pixels of the scan at full size, so a fitted preview shows only part of the sharpening; the loupe (⌘L) shows it at 100%.") {
             UnitSlider(title: "Sharpness", value: $model.frame.sharpness, perUnit: 0.01, range: 0...300, unit: "%",
+                       defaultPhysical: FrameSettings().sharpness,
                        caption: "unsharp mask, halos held to the pixels round it").equatable()
             LabeledSlider(title: "Radius", value: $model.frame.sharpenRadius, range: 0.3...5, step: 0.1,
                           format: "%.1f px", reset: 1, caption: "how fine the detail it sharpens").equatable()

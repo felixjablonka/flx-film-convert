@@ -97,8 +97,8 @@ struct FrameSettings: Codable, Equatable {
     var masks: [LocalMask] = []
     /// The print's detail (`DetailSettings`): unsharp mask on its lightness,
     /// with its radius in pixels of the full-size scan and an edge mask, and
-    /// CLAHE local contrast.
-    var sharpness: Double = 0
+    /// CLAHE local contrast. Sharpness starts at 1 (100%).
+    var sharpness: Double = 1
     var sharpenRadius: Double = 1
     var sharpenMasking: Double = 0
     var localContrast: Double = 0

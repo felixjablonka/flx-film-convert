@@ -50,11 +50,36 @@ November 2026). A roll or frame set to another keeps it.
 `RebateField` (`Sources/Core/Scan.swift`) finds the rebate in 64 places along each long edge: in
 from the holder's dark surround, past the film's edge, the first band that changes only gradually
 and ends in a step is rebate, unless it is a sprocket hole, which shows as a much brighter level.
-A line through the bands gives each strip and its tilt. Along each strip the base is a quartic per
-channel, refitted without bins that edge print or dust pull away; across, it is interpolated, with
-the lift a radial falloff gives between the edges, from the strips' own curvature. When only one
-edge shows clean rebate, it stands in for both. It is tuned in pixels at about 2048 on the long
-side, so a bigger scan is measured reduced.
+Two strips are tried on each edge, and the one along which the base holds in more places is kept:
+the inner half of each band, through a line (which follows a scan that is not level), and the rows
+where most places read the rebate's level, the same distance in from the film's edge everywhere.
+On colour film the first usually wins. On black-and-white film the inner half is often where light
+spread from a dense part of the picture (a bright sky) across the gate's edge fogged the rebate, or
+where a picture as thin as the base runs on with no step, and the clean base lies further out, by the
+sprocket holes.
+
+Along each strip the base is fitted per channel through 40 bins. Bins far off their neighbours (a
+sprocket hole, a stain) go first; refitting, so do those the fit shows edge print, dust or fog
+pulled down, more readily than those pulled up, as the rebate is the thinnest the film gets. The
+two edges are then fitted together: one shape along them, as a falloff about the frame's middle
+gives, with an offset and a lean of each edge's own, so a stretch fogged on one edge falls below
+the shape the other shows, and goes. The fit is a quartic where the bins kept reach both ends of
+the edge without gaps, and a quadratic or a line where they do not. Across, the base is
+interpolated, with the lift a radial falloff gives between the edges, from the strips' own
+curvature.
+
+When only one edge shows clean rebate, it stands in for both. When neither does, the gaps between
+frames at the short ends serve instead: unexposed film too, past the holder and whatever of the
+next frame shows, at the level the long edges' rebate showed where it was not clean enough to fit,
+or else the brightest flat band. It is all tuned in pixels at about 2048 on the long side, so a
+bigger scan is measured reduced.
+
+On a roll of Ilford HP5 Plus (34 Z f scans, with a flat field), both edges now give a strip on 31
+frames (20 before) and every frame gets a field; what falloff the field leaves is 0.04 D (median)
+and at most 0.09 D, where it was up to 1 D. Checked against the gaps between frames, which the fit
+never sees, the base is right to 0.003 D (median) and 0.010 D (p90), from 0.005 and 0.033 D. On
+107 colour scans it changed by 0.005 D (median), and two fields that had gone wrong (0.42 and
+0.51 D of falloff, where the rest of their roll shows about 0.18 D) are fixed.
 
 ## Flat field (optional, per roll)
 
@@ -81,9 +106,11 @@ the scan turned until the rebate strips are level, each edge is where the median
 steps up out of the flattest band at base level: the long edges searched from the strips inwards,
 the frame ends in the outer 35% at either end. Bare light past the film's end (about 0.6 D under the
 base) does not count as base. A frame end where the picture is unexposed right up to the gap is
-taken where six columns in a row are as flat as base. The tilt is refined from a line through each
-long edge in eight stretches (the median of pairwise slopes). The print is then levelled and cut
-0.6% inside the edges.
+taken where six columns in a row are as flat as base. A long edge whose rebate is fogged next to a
+dense picture, so no band at base level shows, is taken at a clear, straight step of 0.15 D or more
+out of it. The tilt is refined from a line through each long edge in eight stretches (the median of
+pairwise slopes), and only from the edges with rebate of their own. The print is then levelled and
+cut 0.6% inside the edges.
 
 On 107 test scans (35 mm and 120, Nikon Z 7 and Z f), 103 found all four edges; the long edges came
 out level to 0.04° (median; 0.11° at p90), 35 mm pictures 1.484-1.497 wide over high. About 85 ms a
@@ -95,7 +122,8 @@ Sharpness (an unsharp mask, its radius in pixels of the full-size scan, with edg
 held to the 3 x 3 range) and local contrast (CLAHE: 8 x 8 tiles, 256 bins, a clip limit, the tiles'
 curves blended by smoothstep), after NegPy's. Both work on the print's lightness (L*) and scale its
 RGB to match, so they change no colour (`Sources/Core/DetailStage.swift`). They run after the print,
-before Bloom & Glow. A fitted preview shows little of the sharpening; the loupe shows it at 100%.
+before Bloom & Glow. Sharpness starts at 100%, with a 1-pixel radius and no masking. A fitted
+preview shows little of the sharpening; the loupe shows it at 100%.
 
 ## The loupe
 

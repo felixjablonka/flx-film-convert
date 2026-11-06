@@ -11,6 +11,8 @@ import simd
 //              [--sharpness K] [--radius PX] [--masking 0-1] [--clahe 0-1]
 //              [--camera TEXT] [--lens TEXT] [--date YYYY-MM-DD] [--ei N] [--notes TEXT]
 //   flxconvert --read-metadata <file>...      what an exported file says about itself
+//   flxconvert --find-rebate [--gaps] --film STOCK <scan>...   the base each scan gives (--gaps: the
+//              gaps between frames alone); --find-picture likewise, the picture's corners
 //   flxconvert --grey-ramp --film STOCK [--paper STOCK] [--exposure STOPS]
 //
 // Without --pick, the base is the rebate along both long edges. --grey-ramp
@@ -47,7 +49,7 @@ roll.flatField = option("--flat").map { URL(fileURLWithPath: $0).standardizedFil
 var frame = FrameSettings()
 frame.exposure = option("--exposure").flatMap(Double.init) ?? 0
 frame.grade = option("--grade").flatMap(Double.init)
-frame.sharpness = option("--sharpness").flatMap(Double.init) ?? 0
+frame.sharpness = option("--sharpness").flatMap(Double.init) ?? frame.sharpness
 frame.sharpenRadius = option("--radius").flatMap(Double.init) ?? 1
 frame.sharpenMasking = option("--masking").flatMap(Double.init) ?? 0
 frame.localContrast = option("--clahe").flatMap(Double.init) ?? 0
@@ -134,12 +136,40 @@ do {
         }
         exit(0)
     }
+    if args.contains("--find-rebate") {
+        // The base reference found on each scan: where its strips lie (pixels at the 2048 preview, across
+        // the frame at 10% and 90% along it), how wide, and the base's green log10 on a 5 x 5 grid.
+        for url in allPaths {
+            let prepared = converter.prepare(try Scan.load(url, maxDimension: 2048), url: url, roll: roll)
+            let scan = prepared.scan
+            let t0 = CFAbsoluteTimeGetCurrent()
+            // --gaps: the gaps between frames alone, whatever the long edges show.
+            let found = args.contains("--gaps")
+                ? Result { guard let f = RebateField.detectGaps(in: scan) else { throw RebateField.Failure.noRebate("short") }; return f }
+                : Result { try RebateField.detect(in: scan) }
+            let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+            guard case .success(let f) = found else {
+                if case .failure(let e) = found { print(String(format: "%@ | none | %@ (%.0f ms)", url.lastPathComponent, "\(e)", ms)) }
+                continue
+            }
+            let n = Double(f.vertical ? scan.width : scan.height)
+            let strips = [f.near, f.far].map { String(format: "%.1f-%.1f/%.1f", $0.c0 * n, $0.c1 * n, $0.half * n) }
+            let grid = (0..<5).flatMap { j in (0..<5).map { i in
+                String(format: "%.3f", f.baseLog(x: 0.1 + 0.2 * Double(i), y: 0.1 + 0.2 * Double(j)).y) } }
+            print(String(format: "%@ | %@ | %@ | falloff %.3f | %@ | %@ (%.0f ms)", url.lastPathComponent,
+                         f.edges.rawValue, strips.joined(separator: " "), f.falloff, f.onlyEdge ?? "both",
+                         grid.joined(separator: ","), ms))
+        }
+        exit(0)
+    }
     if args.contains("--find-picture") {
         // The picture's corners on each scan, as fractions, and how long finding them took.
         for url in allPaths {
             let prepared = converter.prepare(try Scan.load(url, maxDimension: 2048), url: url, roll: roll)
             let scan = prepared.scan
-            guard let field = try? RebateField.detect(in: scan) else { print("\(url.lastPathComponent): no rebate"); continue }
+            // --gaps: from the gaps between frames alone, whatever the long edges show.
+            let detected = args.contains("--gaps") ? RebateField.detectGaps(in: scan) : try? RebateField.detect(in: scan)
+            guard let field = detected else { print("\(url.lastPathComponent): no rebate"); continue }
             let t0 = CFAbsoluteTimeGetCurrent()
             let found = PictureFinder.find(in: scan, base: .field(field), field: field)
             let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000

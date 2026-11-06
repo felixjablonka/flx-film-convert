@@ -32,7 +32,9 @@ enum ThumbnailCache {
         func hash(_ text: String) -> String {
             SHA256.hash(data: Data(text.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
         }
-        return hash(url.path) + "/" + hash("1|\(modified)|\(size)|\(settings[0])|\(settings[1])")
+        // The leading number goes up when the conversion itself changes (2: the rebate finder that reads
+        // black-and-white film and falls back on the gaps between frames).
+        return hash(url.path) + "/" + hash("2|\(modified)|\(size)|\(settings[0])|\(settings[1])")
     }
 
     private static func file(_ key: String) -> URL { directory.appendingPathComponent(key + ".jpg") }
