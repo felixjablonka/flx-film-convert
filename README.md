@@ -35,7 +35,8 @@ photographic paper, as it would in a darkroom.
   date and film speed the pictures were taken with.
 
 The film menus list the negatives still sold new: Kodak's Ektar, Gold, Ultramax, Portra, Tri-X,
-T-Max, Vision3 and Verita stocks and Ilford HP5 Plus.
+T-Max, Vision3 and Verita stocks and Ilford's Delta 100 and 400, FP4 Plus, HP5 Plus, Pan F Plus
+and Ortho Plus.
 
 ![The scan itself, with the two strips of rebate the film base is measured on](docs/images/scan.jpg)
 
@@ -77,7 +78,8 @@ That makes `FLX Film Convert.app` here, and `build/flxconvert`, the command-line
 `./build.sh dmg` also packages `build/FLX Film Convert.dmg`. Quit the app before building it again: a
 bundle replaced under a running app breaks its Open and Save panels, so `build.sh` refuses.
 
-`engine/` holds a snapshot of FLX Film Lab's engine, from the release `engine/VERSION` names (1.3.0).
+`engine/` holds a snapshot of FLX Film Lab's engine, from the release `engine/VERSION` names (1.3.0),
+with the Ilford stocks 1.4.0 added (`engine/SNAPSHOT` names the commit).
 To build on a newer FLX Film Lab, run `./sync-engine.sh PATH`, with PATH a checkout of it.
 
 ## Scanning

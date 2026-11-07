@@ -8,9 +8,9 @@ Copyright © 2026 Felix Jablonka.
 Copyright © 2026 Felix Jablonka — <https://github.com/felixjablonka/flx-film-lab>
 
 FLX Film Convert prints with FLX Film Lab's engine. `engine/` is a snapshot of FLX Film Lab 1.3.0's
-engine sources, its Metal shader and its film and paper data, copied by `sync-engine.sh`
-(`engine/SNAPSHOT` names the commit), and built unchanged. These files in `Sources/` are FLX Film
-Lab's too, copied and adapted:
+engine sources, its Metal shader and its film and paper data, with the Ilford stocks of 1.4.0,
+copied by `sync-engine.sh` (`engine/SNAPSHOT` names the commit), and built unchanged. These files
+in `Sources/` are FLX Film Lab's too, copied and adapted:
 
 - `Sources/App/CropOverlay.swift` and `Sources/App/MaskOverlay.swift`: the crop and the
   dodge-and-burn masks drawn on the print

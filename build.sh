@@ -14,7 +14,7 @@ cd "$(dirname "$0")"
 
 APP_NAME="FLX Film Convert"
 # The release this builds; CHANGELOG.md names what is in it.
-VERSION="${VERSION:-0.1.1}"
+VERSION="${VERSION:-0.1.2}"
 APP="$APP_NAME.app"
 BUNDLE_ID="lab.flx.FLXFilmConvert"
 TARGET="arm64-apple-macosx26.0"

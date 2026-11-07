@@ -7,7 +7,7 @@ import Foundation
 /// - Kodak: Ektar 100, Gold 200, Portra 160, 400 and 800 (and its pushes),
 ///   Ultramax 400, the four Vision3 stocks, Verita 200D (April 2026, by
 ///   request through Kodak's motion picture sales), T-Max 100, Tri-X 400.
-/// - Ilford HP5 Plus.
+/// - Ilford Delta 100 and 400, FP4 Plus, HP5 Plus, Pan F Plus and Ortho Plus.
 ///
 /// Left out, as no longer made: Fujifilm C200 (now "Fujifilm 200", taken for
 /// Kodak Gold), Pro 400H and Superia X-TRA 400 (Fujifilm confirmed both gone,
@@ -24,7 +24,8 @@ enum FilmCatalogue {
         "kodak_vision3_50d", "kodak_vision3_200t", "kodak_vision3_250d", "kodak_vision3_500t",
         "kodak_verita_200d",
         "kodak_t_max_100", "kodak_tri_x_400", "kodak_tri_x_400_push2",
-        "ilford_hp5_plus",
+        "ilford_delta_100", "ilford_delta_400", "ilford_fp4_plus", "ilford_hp5_plus",
+        "ilford_pan_f_plus", "ilford_ortho_plus",
     ]
 
     /// The menu's groups: the negatives on sale, and any of `kept` (the films

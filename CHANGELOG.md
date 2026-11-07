@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.2 (2026-11-07)
+
+Five more Ilford films.
+
+### New
+- **Ilford Delta 100, Delta 400, FP4 Plus, Pan F Plus and Ortho Plus** join HP5 Plus in the film
+  menus: the profiles FLX Film Lab 1.4.0 builds from HARMAN's own technical information. Exports
+  give each its speed as its sheet rates it to daylight: ISO 100, 400, 125, 50 and 80.
+
+The engine is still FLX Film Lab 1.3.0's, with only these five films added, so every other film
+prints as before.
+
 ## 0.1.1 (2026-11-06)
 
 The rebate on black-and-white film, the gaps between frames where no long edge shows it, and
