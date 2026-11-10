@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.0 (2026-11-10)
+
+120 film in its own sizes, a square crop, and memory kept in check on Macs with less of it.
+
+### New
+- **Format** in the Roll section: 35 mm, or 6 × 4.5, 6 × 6, 6 × 7, 6 × 8 or 6 × 9 on 120, which the
+  rebate and the picture are looked for as (`--format` in `flxconvert`). On 120 the base comes from
+  the long edges only where both show and agree with the gaps between frames, and else from the
+  gaps, as a carrier often covers the film's edges or leaves a sliver too thin to read; Crop to
+  Picture takes a frame's length (give or take 12%) from wherever its gaps lie along the scan. 6 × 6
+  and 6 × 7 were checked on real rolls, all five sizes on synthetic scans.
+- **1:1** among the crop's proportions.
+
+### Fixed
+- **120 negatives.** On a roll of 6 × 6 XP2 Super, scanned in a carrier that covers the film's edges,
+  the base came from a sliver of rebate a few pixels wide, blurred by the carrier, or from a flat
+  foggy sky taken for a gap: up to 0.7 D off. Now every frame reads it in its gaps, the same to
+  0.08 D across the roll. Crop to Picture took the scan's border for the edges the carrier covers,
+  and missed frames off the scan's middle; now it finds all four edges on all 12 frames. Where a
+  carrier covers a long edge, the picture's edge is where the carrier's band ends (out of focus as
+  it often is), and the frame is levelled by its ends instead.
+- **The gaps between frames** are looked for at the brightest level both ends of the scan share,
+  as the base is the thinnest the film gets: a flat stretch of picture at the level the long edges
+  wrongly suggested no longer passes for them. No 35 mm frame among 238 changed.
+- **Memory.** A 45 MP frame takes 3 to 6 GB while it is decoded and printed at full size, and the
+  loupe and an export could do it at once while the sidebar's prints were being made, enough to push
+  a 16 GB Mac out of memory, which stalls the app until it is force-quit. Full-size work now goes one
+  at a time; when macOS says memory runs short, the app lets go of the other frames' scans and the
+  loupe's full-size frame (unless the loupe is open), and at critical stops making sidebar prints;
+  each preview render drains what Metal autoreleases, which a dragged slider let pile up; and an
+  export no longer waits on the render queue from the main thread.
+- `flxconvert --read-metadata FILE` works as the README gives it: it needed `--film` and took only
+  files named before the option.
+- A relative `--flat` path is read from the folder `flxconvert` was started in.
+
 ## 0.1.2 (2026-11-07)
 
 Five more Ilford films.

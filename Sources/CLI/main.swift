@@ -5,7 +5,7 @@ import simd
 
 // flxconvert: FLX Film Convert from the shell, on the same core as the app.
 //
-//   flxconvert <scan.raw> <out.jpg|tif|png> --film STOCK [--paper STOCK]
+//   flxconvert <scan.raw> <out.jpg|tif|png> --film STOCK [--paper STOCK] [--format 135|645|66|67|68|69]
 //              [--exposure STOPS] [--grade R] [--filter-y CC] [--filter-m CC]
 //              [--pick x0,x1,y0,y1] [--turns N] [--straighten DEG] [--size PX]
 //              [--sharpness K] [--radius PX] [--masking 0-1] [--clahe 0-1]
@@ -30,22 +30,59 @@ func option(_ name: String) -> String? {
 }
 func numbers(_ text: String) -> [Double] { text.split(separator: ",").compactMap { Double($0) } }
 
+/// A raw scan, or a dump --dump-field wrote (<name>.scan.f32, with <name>.size beside it), for tests.
+func loadScan(_ url: URL, maxDimension: Int?) throws -> Scan {
+    guard url.lastPathComponent.hasSuffix(".scan.f32") else { return try Scan.load(url, maxDimension: maxDimension) }
+    let sizeFile = URL(fileURLWithPath: String(url.path.dropLast(".scan.f32".count)) + ".size")
+    let dims = try String(contentsOf: sizeFile, encoding: .utf8).split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
+    let data = try Data(contentsOf: url)
+    guard dims.count == 2, data.count == dims[0] * dims[1] * 16 else { fail("\(url.lastPathComponent): not a scan dump") }
+    return Scan(width: dims[0], height: dims[1], pixels: data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) })
+}
+
 // The engine finds its packs and shader from the working directory: the
 // snapshot next to build/. Paths are made absolute first.
 let paths = args.prefix(while: { !$0.hasPrefix("--") }).prefix(2)
     .map { URL(fileURLWithPath: $0).standardizedFileURL }
 let allPaths = args.prefix(while: { !$0.hasPrefix("--") }).map { URL(fileURLWithPath: $0).standardizedFileURL }
+// Files named in options, against the folder flxconvert was started in.
+let launchDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+func launchPath(_ p: String) -> URL { URL(fileURLWithPath: p, relativeTo: launchDir).standardizedFileURL }
 let engineDir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
     .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("engine")
 guard FileManager.default.changeCurrentDirectoryPath(engineDir.path) else { fail("no engine snapshot at \(engineDir.path)") }
 
+if let i = args.firstIndex(of: "--read-metadata") {
+    // What an exported file says about itself: TIFF, EXIF and IPTC. No film needed; the files may come
+    // before the option or after it.
+    let files = allPaths + args[(i + 1)...].prefix(while: { !$0.hasPrefix("--") }).map(launchPath)
+    for url in files {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else {
+            print("\(url.lastPathComponent): unreadable"); continue
+        }
+        print("== \(url.lastPathComponent)")
+        for key in [kCGImagePropertyTIFFDictionary, kCGImagePropertyExifDictionary, kCGImagePropertyIPTCDictionary,
+                    kCGImagePropertyExifAuxDictionary] {
+            guard let d = props[key] as? [CFString: Any] else { continue }
+            for (k, v) in d.sorted(by: { ($0.key as String) < ($1.key as String) }) {
+                print("  \(key):\(k) = \(v)".replacingOccurrences(of: "\n", with: " "))
+            }
+        }
+    }
+    exit(0)
+}
 guard let film = option("--film") else { fail("--film STOCK is required") }
 var roll = RollSettings()
 roll.filmStock = film
 roll.printStock = option("--paper")
+if let f = option("--format") {
+    guard let format = FrameFormat(argument: f) else { fail("--format: 135, 645, 66, 67, 68 or 69") }
+    roll.format = format
+}
 roll.filterY = option("--filter-y").flatMap(Double.init) ?? 0
 roll.filterM = option("--filter-m").flatMap(Double.init) ?? 0
-roll.flatField = option("--flat").map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+roll.flatField = option("--flat").map { launchPath($0).path }
 var frame = FrameSettings()
 frame.exposure = option("--exposure").flatMap(Double.init) ?? 0
 frame.grade = option("--grade").flatMap(Double.init)
@@ -99,7 +136,7 @@ do {
         let size = option("--size").flatMap(Int.init) ?? 2048
         for url in allPaths {
             let scan = converter.prepare(try Scan.load(url, maxDimension: size), url: url, roll: roll).scan
-            guard let field = try? RebateField.detect(in: scan) else { print("\(url.lastPathComponent): no rebate"); continue }
+            guard let field = try? RebateField.detect(in: scan, format: roll.format) else { print("\(url.lastPathComponent): no rebate"); continue }
             let unmixer = try converter.unmixer(for: roll)
             var t0 = CFAbsoluteTimeGetCurrent()
             let exact = unmixer.negative(of: scan, base: .field(field))
@@ -120,33 +157,17 @@ do {
         }
         exit(0)
     }
-    if args.contains("--read-metadata") {
-        // What an exported file says about itself: TIFF, EXIF and IPTC.
-        for url in allPaths {
-            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
-                  let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else { continue }
-            print("== \(url.lastPathComponent)")
-            for key in [kCGImagePropertyTIFFDictionary, kCGImagePropertyExifDictionary, kCGImagePropertyIPTCDictionary,
-                        kCGImagePropertyExifAuxDictionary] {
-                guard let d = props[key] as? [CFString: Any] else { continue }
-                for (k, v) in d.sorted(by: { ($0.key as String) < ($1.key as String) }) {
-                    print("  \(key):\(k) = \(v)".replacingOccurrences(of: "\n", with: " "))
-                }
-            }
-        }
-        exit(0)
-    }
     if args.contains("--find-rebate") {
         // The base reference found on each scan: where its strips lie (pixels at the 2048 preview, across
         // the frame at 10% and 90% along it), how wide, and the base's green log10 on a 5 x 5 grid.
         for url in allPaths {
-            let prepared = converter.prepare(try Scan.load(url, maxDimension: 2048), url: url, roll: roll)
+            let prepared = converter.prepare(try loadScan(url, maxDimension: 2048), url: url, roll: roll)
             let scan = prepared.scan
             let t0 = CFAbsoluteTimeGetCurrent()
             // --gaps: the gaps between frames alone, whatever the long edges show.
             let found = args.contains("--gaps")
-                ? Result { guard let f = RebateField.detectGaps(in: scan) else { throw RebateField.Failure.noRebate("short") }; return f }
-                : Result { try RebateField.detect(in: scan) }
+                ? Result { guard let f = RebateField.detectGaps(in: scan, format: roll.format) else { throw RebateField.Failure.noRebate("short") }; return f }
+                : Result { try RebateField.detect(in: scan, format: roll.format) }
             let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
             guard case .success(let f) = found else {
                 if case .failure(let e) = found { print(String(format: "%@ | none | %@ (%.0f ms)", url.lastPathComponent, "\(e)", ms)) }
@@ -165,13 +186,13 @@ do {
     if args.contains("--find-picture") {
         // The picture's corners on each scan, as fractions, and how long finding them took.
         for url in allPaths {
-            let prepared = converter.prepare(try Scan.load(url, maxDimension: 2048), url: url, roll: roll)
+            let prepared = converter.prepare(try loadScan(url, maxDimension: 2048), url: url, roll: roll)
             let scan = prepared.scan
             // --gaps: from the gaps between frames alone, whatever the long edges show.
-            let detected = args.contains("--gaps") ? RebateField.detectGaps(in: scan) : try? RebateField.detect(in: scan)
+            let detected = args.contains("--gaps") ? RebateField.detectGaps(in: scan, format: roll.format) : try? RebateField.detect(in: scan, format: roll.format)
             guard let field = detected else { print("\(url.lastPathComponent): no rebate"); continue }
             let t0 = CFAbsoluteTimeGetCurrent()
-            let found = PictureFinder.find(in: scan, base: .field(field), field: field)
+            let found = PictureFinder.find(in: scan, base: .field(field), field: field, format: roll.format)
             let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
             guard let p = found else { print(String(format: "%@: no picture (%.0f ms)", url.lastPathComponent, ms)); continue }
             let c = p.corners
@@ -192,7 +213,7 @@ do {
         let scan = prepared.scan
         try scan.pixels.withUnsafeBytes { Data($0) }.write(to: URL(fileURLWithPath: out.path + ".scan.f32"))
         try "\(scan.width) \(scan.height)\n".write(toFile: out.path + ".size", atomically: true, encoding: .utf8)
-        guard let base = try? converter.base(for: scan, frame: frame, field: nil) else {
+        guard let base = try? converter.base(for: scan, frame: frame, field: nil, format: roll.format) else {
             print("no rebate: the scan only"); exit(0)
         }
         var logs = [Float](repeating: 0, count: scan.width * scan.height * 3)
@@ -220,7 +241,7 @@ do {
         let scan = try Scan.load(url, maxDimension: 2048)
         print("decode      \(ms(t))  \(scan.width) x \(scan.height)")
         t = CFAbsoluteTimeGetCurrent()
-        let base = try converter.base(for: scan, frame: frame, field: nil)
+        let base = try converter.base(for: scan, frame: frame, field: nil, format: roll.format)
         print("rebate      \(ms(t))")
         t = CFAbsoluteTimeGetCurrent()
         let cmy = try converter.negative(of: scan, roll: roll, base: base)

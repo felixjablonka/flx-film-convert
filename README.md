@@ -87,6 +87,9 @@ To build on a newer FLX Film Lab, run `./sync-engine.sh PATH`, with PATH a check
 - Show both long edges of the film: the rebate along them is the reference. Sprocket holes may be in
   the frame; they are left out. When only one edge shows, it stands in for both, and when neither
   shows clean rebate, the gap between frames at a short end serves.
+- On 120, set the roll's **Format** (6 × 4.5, 6 × 6, 6 × 7, 6 × 8, 6 × 9) and show the gaps between frames
+  on both sides of the frame: they are the reference there, as a carrier often covers the film's
+  edges.
 - Expose so the rebate is just below clipping.
 - The light's colour temperature hardly matters: the rebate cancels it, and a print changes little
   for any light from 2800 to 6500 K.
@@ -96,8 +99,8 @@ To build on a newer FLX Film Lab, run `./sync-engine.sh PATH`, with PATH a check
 ## Using it
 
 1. **Open Roll** (⌘O) and choose a folder of raw scans.
-2. In the **Roll** section, choose the film and the paper. Each frame prints with the film's own
-   print time; set the exposure, contrast and colour balance from there.
+2. In the **Roll** section, choose the film, the paper and the format. Each frame prints with the
+   film's own print time; set the exposure, contrast and colour balance from there.
 3. **Crop to Picture** in Crop & Straighten levels and crops a frame.
 4. The **Export** tab holds what the pictures were shot with, and **Export Frame** (⌘E) or
    **Export Roll** (⇧⌘E) writes JPEG or 16-bit TIFF files.
@@ -111,7 +114,7 @@ A double-click on a slider puts it back, each section has a reset link, and **Fr
 build/flxconvert scan.NEF print.jpg --film kodak_portra_400
 ```
 
-Options: `--paper STOCK`, `--exposure STOPS`, `--grade R`, `--filter-y CC`, `--filter-m CC`,
+Options: `--paper STOCK`, `--format 135|645|66|67|68|69`, `--exposure STOPS`, `--grade R`, `--filter-y CC`, `--filter-m CC`,
 `--pick x0,x1,y0,y1` (a rebate picked by hand, in frame fractions), `--turns N`, `--size PX`,
 `--sharpness K` (1 is 100%, the default), `--radius PX`, `--masking 0-1`, `--clahe 0-1`, and for the metadata `--camera`,
 `--lens`, `--date YYYY-MM-DD`, `--ei N` and `--notes`. `flxconvert --read-metadata FILE` shows what a

@@ -255,21 +255,58 @@ extension RebateField {
     /// Finds the rebate strips along both long edges and fits the field; where
     /// neither long edge shows clean rebate, the gaps between frames at the
     /// short ends instead.
-    static func detect(in full: Scan) throws -> RebateField {
+    ///
+    /// Roll film: a carrier often covers the film's edges, or leaves a sliver
+    /// of them a few pixels wide, blurred by its own edge beside it and read
+    /// too dense. So the long edges count only where both show and agree with
+    /// the gaps between frames where the two meet, at the frame's corners
+    /// (within 0.03 in log10): then they are kept, as they follow the light
+    /// along the whole frame, where the gaps see only its ends. Else the
+    /// gaps, where both show; then the long edges; then one gap.
+    static func detect(in full: Scan, format: FrameFormat = .thirtyFive) throws -> RebateField {
         let scan = reducedForSearch(full)
         let portrait = scan.height > scan.width
         let long = EdgeSearch(scan, vertical: portrait, ends: false, expected: nil)
-        if let field = long.field() { return field }
-        if let field = EdgeSearch(scan, vertical: !portrait, ends: true, expected: long.baseLevel).field() { return field }
+        if format.isRollFilm {
+            let gaps = EdgeSearch(scan, vertical: !portrait, ends: true, expected: nil, rollFilm: true).field()
+            let edges = long.field()
+            if let g = gaps, g.onlyEdge == nil {
+                if let l = edges, l.onlyEdge == nil, l.agrees(with: g) { return l }
+                return g
+            }
+            if let field = edges { return field }
+            if let g = gaps { return g }
+        } else {
+            if let field = long.field() { return field }
+            if let field = EdgeSearch(scan, vertical: !portrait, ends: true, expected: long.baseLevel).field() { return field }
+        }
         throw Failure.noRebate(portrait ? "left or right" : "top or bottom")
     }
 
-    /// The gaps between frames alone, whatever the long edges show: for testing.
-    static func detectGaps(in full: Scan) -> RebateField? {
+    /// Whether this field (the long edges') and `gaps` (the gaps between
+    /// frames') read the same base where both measure it: along each gap, a
+    /// fifth of the way in from either long edge, the mean over the channels
+    /// within 0.03 in log10, at the median of the four.
+    func agrees(with gaps: RebateField) -> Bool {
+        var diffs: [Float] = []
+        for strip in [gaps.near, gaps.far] {
+            for along in [0.2, 0.8] {
+                let across = strip.across(along)
+                let (x, y) = gaps.vertical ? (across, along) : (along, across)
+                let d = abs(baseLog(x: x, y: y) - gaps.baseLog(x: x, y: y))
+                diffs.append((d.x + d.y + d.z) / 3)
+            }
+        }
+        return Stats.median(diffs) <= 0.03
+    }
+
+    /// The gaps between frames alone, whatever the long edges show.
+    static func detectGaps(in full: Scan, format: FrameFormat = .thirtyFive) -> RebateField? {
         let scan = reducedForSearch(full)
         let portrait = scan.height > scan.width
         let long = EdgeSearch(scan, vertical: portrait, ends: false, expected: nil)
-        return EdgeSearch(scan, vertical: !portrait, ends: true, expected: long.baseLevel).field()
+        return EdgeSearch(scan, vertical: !portrait, ends: true, expected: format.isRollFilm ? nil : long.baseLevel,
+                          rollFilm: format.isRollFilm).field()
     }
 
     /// Tuned in pixels at about 2048 on the long edge; the field itself is in
@@ -317,21 +354,65 @@ private struct EdgeSearch {
     let vertical: Bool, ends: Bool
     let alongN: Int, acrossN: Int, depth: Int
     let span: [Double]
+    /// The longest run a gap's plateau may be, as a fraction across: roll
+    /// film's gaps are wider.
+    let maxRun: Double
     private(set) var near = Side(), far = Side()
 
-    init(_ scan: Scan, vertical: Bool, ends: Bool, expected: Float?) {
+    init(_ scan: Scan, vertical: Bool, ends: Bool, expected: Float?, rollFilm: Bool = false) {
         self.scan = scan
         self.vertical = vertical
         self.ends = ends
         alongN = vertical ? scan.height : scan.width
         acrossN = vertical ? scan.width : scan.height
-        // A gap between frames lies further in than the rebate along an edge.
-        depth = ends ? acrossN / 4 : acrossN / 5
+        // A gap between frames lies further in than the rebate along an edge;
+        // on roll film anywhere, as a frame fills only part of a scan, so each
+        // end is searched to the middle.
+        depth = ends ? (rollFilm ? acrossN / 2 : acrossN / 4) : acrossN / 5
+        maxRun = rollFilm ? 0.15 : 0.08
         // Along a gap, the long edges' rebate and sprocket holes at either
         // end of it stay out.
         span = ends ? [0.15, 0.85] : [0.08, 0.92]
-        near = side(near: true, expected: expected)
-        far = side(near: false, expected: expected)
+        if ends {
+            // The gap's level: the base is the thinnest the film gets, and the
+            // same at both ends, so the brightest level both ends show beats a
+            // darker one expected from the long edges (a flat stretch of the
+            // picture can pass for their rebate). Bare light past the film's
+            // end shows at one end only.
+            // The profiles are read once, for the level and the bands both.
+            let n = profiles(near: true), f = profiles(near: false)
+            let level = gapLevel(expected: expected, near: n, far: f)
+            near = side(n, expected: level)
+            far = side(f, expected: level)
+        } else {
+            near = side(profiles(near: true), expected: expected)
+            far = side(profiles(near: false), expected: expected)
+        }
+    }
+
+    /// The level to look for the gaps at: the brightest that plateaus on at
+    /// least a fifth of the profiles at both ends show (within 0.12 in log10,
+    /// as the light falls off towards a scan's ends), where it is brighter
+    /// than `expected` by over 0.12, or there is none expected; else
+    /// `expected`.
+    func gapLevel(expected: Float?, near: [(a: Int, p: [Float])], far: [(a: Int, p: [Float])]) -> Float? {
+        // Each profile's levels sorted, so whether one lies within 0.12 of a
+        // level is its nearest neighbours' answer.
+        func levels(_ profiles: [(a: Int, p: [Float])]) -> [[Float]] {
+            profiles.map { plateaus($0.p).compactMap { $0.level > 0 ? log10($0.level) : nil }.sorted() }
+        }
+        let n = levels(near), f = levels(far)
+        func within(_ v: [Float], _ l: Float) -> Bool {
+            var lo = 0, hi = v.count
+            while lo < hi { let mid = (lo + hi) / 2; if v[mid] < l { lo = mid + 1 } else { hi = mid } }
+            return (lo < v.count && abs(v[lo] - l) < 0.12) || (lo > 0 && abs(v[lo - 1] - l) < 0.12)
+        }
+        func share(_ side: [[Float]], _ l: Float) -> Int { side.reduce(0) { $0 + (within($1, l) ? 1 : 0) } }
+        let common = Set((n + f).flatMap { $0 }.map { ($0 * 100).rounded() / 100 })
+            .filter { share(n, $0) >= 13 && share(f, $0) >= 13 }
+        guard let best = common.max() else { return expected }
+        if let e = expected, best <= log10(e) + 0.12 { return expected }
+        return pow(10, best)
     }
 
     var nearName: String { vertical ? "left" : "top" }
@@ -349,12 +430,18 @@ private struct EdgeSearch {
         }
     }
 
-    func side(near: Bool, expected: Float?) -> Side {
-        var s = Side()
+    /// The 64 profiles in from one edge, spread along the span searched.
+    func profiles(near: Bool) -> [(a: Int, p: [Float])] {
         let lo = ends ? span[0] : 0.08, width = ends ? span[1] - span[0] : 0.84
-        for k in 0..<64 {
+        return (0..<64).map { k in
             let a = Int((lo + width * Double(k) / 63) * Double(alongN))
-            let p = profile(at: a, near: near)
+            return (a, profile(at: a, near: near))
+        }
+    }
+
+    func side(_ profiles: [(a: Int, p: [Float])], expected: Float?) -> Side {
+        var s = Side()
+        for (a, p) in profiles {
             s.profiles.append((a, p))
             if let b = ends ? gapBand(p, expected: expected) : firstBand(p) {
                 s.bands.append(Band(a: a, start: b.start, end: b.end, level: b.level))
@@ -402,7 +489,7 @@ private struct EdgeSearch {
                 end += 1
                 if (end - i) % 4 == 0 { level = Stats.median(Array(p[i..<end])) }
             }
-            if end - i >= 8, end - i <= acrossN * 8 / 100 {
+            if end - i >= 8, Double(end - i) <= Double(acrossN) * maxRun {
                 out.append((i, end, Stats.median(Array(p[i..<end]))))
             }
             i = max(end, i + 1)

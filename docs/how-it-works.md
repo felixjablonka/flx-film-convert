@@ -70,9 +70,23 @@ curvature.
 
 When only one edge shows clean rebate, it stands in for both. When neither does, the gaps between
 frames at the short ends serve instead: unexposed film too, past the holder and whatever of the
-next frame shows, at the level the long edges' rebate showed where it was not clean enough to fit,
-or else the brightest flat band. It is all tuned in pixels at about 2048 on the long side, so a
-bigger scan is measured reduced.
+next frame shows, at the level the long edges' rebate showed where it was not clean enough to fit.
+That level gives way to the brightest one both ends share (within 0.12 in log10, as light falls
+off towards a scan's ends), where that is brighter by over 0.12: the base is the thinnest the film
+gets, and a flat stretch of picture can pass for the long edges' rebate. Bare light past the film's
+end shows at one end only. It is all tuned in pixels at about 2048 on the long side, so a bigger
+scan is measured reduced.
+
+Roll film (the roll's Format set to a 120 size) trusts the long edges less. A carrier for 120 often
+covers the film's edges, or leaves a sliver of rebate a few pixels wide, blurred by the carrier's
+edge beside it: on a roll of 6 x 6 XP2 Super the slivers read up to 0.2 D too dense and a foggy sky
+passed for a gap (0.7 D off). So the long edges are kept only where both show and agree with the
+gaps between frames where the two meet, at the frame's corners (within 0.03 in log10): then they
+follow the light along the whole frame, where the gaps see only its ends (on ten 6 x 7 frames they
+agree to about 0.01, and the field is the one 35 mm would get). Else the gaps, where both show,
+then the long edges, then one gap. On the XP2 roll the gaps, 3 to 6% of the scan wide, read the base
+the same to 0.08 D on all 12 frames. On roll film the gaps are looked for from each end to the
+scan's middle, and may be up to 15% of the scan wide (a quarter of the way and 8% on 35 mm).
 
 On a roll of Ilford HP5 Plus (34 Z f scans, with a flat field), both edges now give a strip on 31
 frames (20 before) and every frame gets a field; what falloff the field leaves is 0.04 D (median)
@@ -111,6 +125,26 @@ dense picture, so no band at base level shows, is taken at a clear, straight ste
 out of it. The tilt is refined from a line through each long edge in eight stretches (the median of
 pairwise slopes), and only from the edges with rebate of their own. The print is then levelled and
 cut 0.6% inside the edges.
+
+On roll film, where a carrier covers a long edge (no base outside it), the edge is where the carrier's opaque band,
+at least 1.5 D over the base, falls off and levels out, a decade or more lower, within 30 rows (the
+carrier is often out of focus): read in each quarter of the length, on a line in all four or in
+three (the carrier need not lie square to the film), the innermost taken, and past a sliver of
+rebate if one shows. A carrier's edge is not the film's, so it never levels the frame:
+with no long edge of the film's own, the frame ends (the gate's edges at the gaps) level it.
+
+On roll film a frame fills only part of a scan, anywhere along it, so the ends are looked for from
+the gaps between frames inwards, where they show, and the other end a frame's length on (the
+format's proportions, give or take 12%: gates differ from camera to camera); with no gap showing,
+one end in the outer 35% and the other a frame's length from it. Where the two gaps that show are
+more than a frame and a half apart (two 6 x 4.5 frames fit a scan), the one nearer the scan's middle
+is kept. On 12 frames of 6 x 6 in a carrier, all four edges were found on every one, the pictures
+0.600 to 0.607 of the scan wide, levelled within 0.6°; ten 6 x 7 frames crop exactly as before.
+On synthetic scans of all five 120 sizes (the film turned up to 0.6° in the carrier, its opening
+58, 56.6 or 55.2 mm across, the frame anywhere along the scan) every edge was found, to within a
+pixel at 2048 where the film shows its own edge, and 4 to 11 pixels inside where the carrier covers
+it (its out-of-focus edge); a frame end the picture is as thin as base at for 3 mm can only be
+found where the picture begins. 35 mm is looked for as before.
 
 On 107 test scans (35 mm and 120, Nikon Z 7 and Z f), 103 found all four edges; the long edges came
 out level to 0.04° (median; 0.11° at p90), 35 mm pictures 1.484-1.497 wide over high. About 85 ms a

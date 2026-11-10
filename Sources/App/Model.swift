@@ -90,7 +90,12 @@ final class Pipeline {
         Pipeline.steps += String(format: "%@ %.1f ", name, (now - clock) * 1000)
         clock = now
     }
-    private let queue = DispatchQueue(label: "lab.flx.FLXFilmConvert.render", qos: .userInitiated)
+    // An autorelease pool per work item, and one per render inside it: the
+    // command buffers Metal hands back autoreleased hold every texture they
+    // used (45 MB a preview-size one), and a dragged slider renders many times
+    // in one work item.
+    private let queue = DispatchQueue(label: "lab.flx.FLXFilmConvert.render", qos: .userInitiated,
+                                      autoreleaseFrequency: .workItem)
     private var converter: Converter?
     private var scans: [URL: Scan] = [:]
     private var scanOrder: [URL] = []
@@ -120,7 +125,7 @@ final class Pipeline {
             while let (r, done) = self.pending {
                 self.pending = nil
                 let t0 = CFAbsoluteTimeGetCurrent()
-                let out = self.render(r)
+                let out = autoreleasepool { self.render(r) }
                 let t1 = CFAbsoluteTimeGetCurrent()
                 DispatchQueue.main.async {
                     if Pipeline.timing {
@@ -164,9 +169,11 @@ final class Pipeline {
         return (prepared.scan, path, "Flat field \(name) takes out the light's falloff. ")
     }
 
-    private func field(_ key: String, _ scan: Scan) -> Result<RebateField, Error> {
+    /// The rebate field of a scan, kept by scan, flat field and format.
+    private func field(_ url: URL, flat: String, format: FrameFormat, _ scan: Scan) -> Result<RebateField, Error> {
+        let key = "\(url.path)|\(flat)|\(format.rawValue)"
         if let f = fields[key] { return f }
-        let f = Result { try RebateField.detect(in: scan) }
+        let f = Result { try RebateField.detect(in: scan, format: format) }
         fields[key] = f
         return f
     }
@@ -181,7 +188,7 @@ final class Pipeline {
             let converter = self.converter!
             let (scan, flatKey, flatNote) = try prepared(r.url, roll: r.roll, converter: converter)
             lap("scan")
-            let found = field("\(r.url.path)|\(flatKey)", scan)
+            let found = field(r.url, flat: flatKey, format: r.roll.format, scan)
             lap("field")
             if case .success(let f) = found { out.field = f }
             var base: BaseReference?
@@ -296,7 +303,7 @@ final class Pipeline {
             self.loupeRunning = true
             while let (r, done) = self.loupePending {
                 self.loupePending = nil
-                let out = self.renderLoupe(r)
+                let out = autoreleasepool { self.renderLoupe(r) }
                 DispatchQueue.main.async { done(out) }
             }
             self.loupeRunning = false
@@ -306,6 +313,20 @@ final class Pipeline {
     /// Lets go of the full-size scan (about 400 MB for 24 MP, 700 for 45).
     func releaseFullSize() {
         queue.async { self.full = nil; self.loupePart = nil }
+    }
+
+    /// When memory runs short: keeps only what the frame on screen needs, and
+    /// the full-size scan only if the loupe is reading it.
+    func trim(keeping url: URL?, fullSize: Bool) {
+        queue.async {
+            self.scans = self.scans.filter { $0.key == url }
+            self.scanOrder = self.scanOrder.filter { $0 == url }
+            let prefix = url.map { $0.path + "|" } ?? "\u{0}"
+            self.flattened = self.flattened.filter { $0.key.hasPrefix(prefix) }
+            self.flattenedOrder = self.flattenedOrder.filter { $0.hasPrefix(prefix) }
+            self.curves = self.curves.filter { $0.key.hasPrefix(prefix) }
+            if !fullSize { self.full = nil; self.loupePart = nil }
+        }
     }
 
     private func renderLoupe(_ r: LoupeRequest) -> LoupeOutput {
@@ -322,13 +343,15 @@ final class Pipeline {
             if full?.key != fullKey {
                 full = nil
                 loupePart = nil
-                try autoreleasepool {
-                    var scan = try Scan.load(r.url, maxDimension: nil)
-                    if !flatKey.isEmpty { scan = converter.prepare(scan, url: r.url, roll: r.roll).scan }
-                    if let stage = converter.dyeStage, let resident = try? stage.resident(scan) {
-                        full = (fullKey, scan.width, scan.height, resident, nil)
-                    } else {
-                        full = (fullKey, scan.width, scan.height, nil, scan)
+                try FullSize.run {
+                    try autoreleasepool {
+                        var scan = try Scan.load(r.url, maxDimension: nil)
+                        if !flatKey.isEmpty { scan = converter.prepare(scan, url: r.url, roll: r.roll).scan }
+                        if let stage = converter.dyeStage, let resident = try? stage.resident(scan) {
+                            full = (fullKey, scan.width, scan.height, resident, nil)
+                        } else {
+                            full = (fullKey, scan.width, scan.height, nil, scan)
+                        }
                     }
                 }
             }
@@ -355,7 +378,7 @@ final class Pipeline {
             guard sx1 - sx0 > 4, sy1 - sy0 > 4 else { return out }
             let box = (x: sx0, y: sy0, width: sx1 - sx0, height: sy1 - sy0)
 
-            let field = try? self.field("\(r.url.path)|\(flatKey)", preview).get()
+            let field = try? self.field(r.url, flat: flatKey, format: r.roll.format, preview).get()
             let base: BaseReference
             if let pick = r.frame.rebatePick, preview.median(pick).min() > 0 {
                 base = .uniform(preview.median(pick))
@@ -423,7 +446,7 @@ final class Pipeline {
             let result = Result { () throws -> PictureFrame in
                 if self.converter == nil { self.converter = try Converter() }
                 let (scan, flatKey, _) = try self.prepared(url, roll: roll, converter: self.converter!)
-                let field = try? self.field("\(url.path)|\(flatKey)", scan).get()
+                let field = try? self.field(url, flat: flatKey, format: roll.format, scan).get()
                 let base: BaseReference
                 if let pick = frame.rebatePick, scan.median(pick).min() > 0 {
                     base = .uniform(scan.median(pick))
@@ -432,7 +455,7 @@ final class Pipeline {
                 } else {
                     throw PictureFinder.Failure.noBase
                 }
-                guard let found = PictureFinder.find(in: scan, base: base, field: field) else {
+                guard let found = PictureFinder.find(in: scan, base: base, field: field, format: roll.format) else {
                     throw PictureFinder.Failure.noPicture
                 }
                 return found
@@ -441,10 +464,18 @@ final class Pipeline {
         }
     }
 
-    /// The field found on a frame's preview, if any, for export to reuse.
-    func knownField(_ url: URL, roll: RollSettings) -> RebateField? {
-        let flat = roll.useFlatField ? (roll.flatField ?? "") : ""
-        return queue.sync { if case .success(let f) = fields["\(url.path)|\(flat)"] { return f } else { return nil } }
+    /// The fields found on frames' previews, where there are any, for export
+    /// to reuse; on the main queue, once the render queue gets to it (never
+    /// waited for there: the render queue can be busy for seconds).
+    func knownFields(_ items: [(url: URL, roll: RollSettings)], completion: @escaping ([RebateField?]) -> Void) {
+        queue.async {
+            let found = items.map { item -> RebateField? in
+                let flat = item.roll.useFlatField ? (item.roll.flatField ?? "") : ""
+                if case .success(let f) = self.fields["\(item.url.path)|\(flat)|\(item.roll.format.rawValue)"] { return f }
+                return nil
+            }
+            DispatchQueue.main.async { completion(found) }
+        }
     }
 
     // MARK: Images
@@ -607,11 +638,26 @@ final class ConvertModel {
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var loading = false
     @ObservationIgnored private var saveWork: DispatchWorkItem?
+    @ObservationIgnored private let memoryPressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical],
+                                                                                            queue: .main)
 
     init() {
         let lib = PackLibrary.shared
         papers = PackIndexEntry.groups(lib.printStocks, films: false)
         colorSpaces = lib.shared_.outputColorSpaces
+        memoryPressure.setEventHandler { [weak self] in self?.memoryRanShort() }
+        memoryPressure.activate()
+    }
+
+    /// macOS saying memory runs short: what the app keeps for speed goes
+    /// first (the other frames' scans, the loupe's full-size frame unless it
+    /// is open), and at critical the sidebar's prints stop until the next
+    /// change asks for them. A Mac with 16 GB or less gets there with 45 MP
+    /// scans and a browser open; without this it would swap until it stalls.
+    private func memoryRanShort() {
+        let critical = memoryPressure.data.contains(.critical)
+        pipeline.trim(keeping: selection, fullSize: loupeOn && !critical)
+        if critical { thumbnailMaker.cancel(); thumbnailWork?.cancel() }
     }
 
     /// Reopens the last roll; called once the window is up, so the property
@@ -1005,6 +1051,28 @@ final class ConvertModel {
     func setStraighten(_ degrees: Double) { frame.geometry.setStraighten(degrees) }
     func resetGeometry() { frame.geometry = FrameGeometry() }
 
+    /// A square is a custom aspect of 1:1. Custom starts at the crop's
+    /// proportions as they are (3:2 from a square), so its sides show to be
+    /// typed over: equal sides would show as 1:1.
+    func setCropChoice(_ choice: CropChoice) {
+        switch choice {
+        case .square:
+            setCustomAspect(width: 1, height: 1)
+        case .custom:
+            editGeometry { g, f in
+                if g.aspect != .custom || g.customWidth == g.customHeight {
+                    var r = g.ratio(frame: f) ?? Double(f.width / max(f.height, 1))
+                    if abs(r - 1) < 0.01 { r = 1.5 }
+                    let round = { (v: Double) in (v * 100).rounded() / 100 }
+                    (g.customWidth, g.customHeight) = r >= 1 ? (round(r), 1) : (1, round(1 / r))
+                }
+                g.setAspect(.custom, frame: f)
+            }
+        default:
+            setCropAspect(choice.aspect)
+        }
+    }
+
     func setCustomAspect(width: Double, height: Double) {
         guard width > 0, height > 0 else { return }
         editGeometry { g, f in
@@ -1147,11 +1215,11 @@ final class ConvertModel {
         let roll = self.roll
         let settings = jobs.map { selection == $0.0 ? frame : (library.frames[$0.0.path] ?? FrameSettings()) }
         let captures = jobs.map { capture.applying(selection == $0.0 ? frameCapture : library.frameCaptures[$0.0.path]) }
-        let fields = jobs.enumerated().map { pipeline.knownField($0.element.0, roll: roll.applying(settings[$0.offset])) }
         let format = exportFormat.engine
         let size: Int? = exportSize == 0 ? nil : exportSize
         let space = outputColorSpace
         exportStatus = "Exporting…"
+        pipeline.knownFields(jobs.enumerated().map { ($0.element.0, roll.applying(settings[$0.offset])) }) { fields in
         DispatchQueue.global(qos: .userInitiated).async {
             var failures: [String] = []
             do {
@@ -1173,6 +1241,7 @@ final class ConvertModel {
                 self.exportStatus = failures.isEmpty ? "Exported \(jobs.count) print\(jobs.count == 1 ? "" : "s")."
                                                      : "Exported with \(failures.count) failed: " + failures.joined(separator: "; ")
             }
+        }
         }
     }
 }

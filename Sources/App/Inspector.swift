@@ -135,6 +135,10 @@ struct RollSection: View {
                          setFrameFilm: { model.frame.filmStock = $0 },
                          setPaper: { model.roll.printStock = $0 })
                 .equatable()
+            Picker("Format", selection: $model.roll.format) {
+                ForEach(FrameFormat.allCases) { Text($0.name).tag($0) }
+            }
+            .help("The film's format, which the rebate and Crop to Picture are looked for as. On 120 the base is read in the gaps between frames, as a carrier often covers the film's edges, and the picture is a frame's length long.")
             FlatFieldRow(model: model)
         }
     }
@@ -244,6 +248,25 @@ struct BaseSection: View {
 
 }
 
+/// The crop proportions the menu offers: FLX Film Lab's (`CropAspect`) and
+/// 1:1, for 6 x 6 negatives. A square is kept as a custom aspect of 1:1, so
+/// settings stay readable both ways; a custom aspect typed in as equal sides
+/// shows as 1:1.
+enum CropChoice: String, CaseIterable, Identifiable {
+    case original = "Original", square = "1:1", threeTwo = "3:2", fourThree = "4:3", fiveFour = "5:4"
+    case panoramic = "65:24", custom = "Custom", free = "Free"
+
+    var id: String { rawValue }
+
+    init(_ g: FrameGeometry) {
+        if g.aspect == .custom, g.customWidth == g.customHeight { self = .square; return }
+        self = CropChoice(rawValue: g.aspect.rawValue) ?? .original
+    }
+
+    /// FLX Film Lab's aspect for every choice but the square.
+    var aspect: CropAspect { CropAspect(rawValue: rawValue) ?? .custom }
+}
+
 struct CropSection: View {
     @Bindable var model: ConvertModel
 
@@ -253,17 +276,17 @@ struct CropSection: View {
                 Toggle(isOn: $model.isCropping) { Label("Crop", systemImage: "crop") }
                     .toggleStyle(.button)
                     .help("Show the whole frame with the crop on it, to drag its corners and edges (⌘R).")
-                Picker("", selection: Binding(get: { geometry.aspect }, set: { model.setCropAspect($0) })) {
-                    ForEach(CropAspect.allCases) { Text($0.rawValue).tag($0) }
+                Picker("", selection: Binding(get: { CropChoice(geometry) }, set: { model.setCropChoice($0) })) {
+                    ForEach(CropChoice.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .labelsHidden().frame(maxWidth: 104)
                 .help("The crop's proportions. Original keeps the frame's own; Free has none.")
                 Button { model.swapCropOrientation() } label: { Image(systemName: "rectangle.portrait.rotate") }
                     .buttonStyle(.borderless)
-                    .disabled(geometry.aspect == .free)
+                    .disabled(geometry.aspect == .free || CropChoice(geometry) == .square)
                     .help("Stand the crop up, or lay it down.")
             }
-            if geometry.aspect == .custom {
+            if CropChoice(geometry) == .custom {
                 HStack(spacing: 4) {
                     TextField("Width", value: Binding(get: { geometry.customWidth },
                                                       set: { model.setCustomAspect(width: $0, height: geometry.customHeight) }),

@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// FLXCONVERT_OPEN=folder, FLXCONVERT_SELECT=file name, FLXCONVERT_SCAN=1 for
 /// the scan view, and _FILM, _TURNS, _STRAIGHTEN, _EXPOSURE, _GRADE, _CROPPING,
 /// _CROP, _MASK, _SIZE, _FRESH for no saved settings, _SHARPNESS, _RADIUS, _MASKING, _CLAHE, _LOUPE=x,y,
-/// _ROLL_FILTER=y,m, _FRAME_FILTER=y,m, _TAB=export, _CAMERA, _LENS, _FRAME_LENS, _DATE=1, _THUMBS=1 for the
+/// _ROLL_FILTER=y,m, _FRAME_FILTER=y,m, _FORMAT=66, _TAB=export, _CAMERA, _LENS, _FRAME_LENS, _DATE=1, _THUMBS=1 for the
 /// sidebar's prints, _CACHE=1 to cache them, _WAIT=seconds before the snapshot), the app
 /// opens the roll, waits for the print (and the loupe), draws its own
 /// window into the PNG and quits. Nothing is captured from the screen.
@@ -87,6 +87,7 @@ enum SelfCheck {
         }
         if env["FLXCONVERT_FRESH"] == "1" { model.frame = FrameSettings() }
         if let film = env["FLXCONVERT_FILM"] { model.frame.filmStock = film }
+        if let f = env["FLXCONVERT_FORMAT"].flatMap(FrameFormat.init(argument:)) { model.roll.format = f }
         if let flat = env["FLXCONVERT_FLAT"] { model.useAsFlatField(URL(fileURLWithPath: flat)) }
         if env["FLXCONVERT_SCAN"] == "1" { model.showScan = true }
         if let t = env["FLXCONVERT_TURNS"].flatMap(Int.init) { model.frame.geometry.quarterTurns = t }
@@ -127,6 +128,45 @@ enum SelfCheck {
     }
 
     @MainActor private static var swept = false
+    @MainActor private static var soaked = false
+
+    /// A restless user for `seconds` (FLXCONVERT_SOAK): every 0.3 s one of
+    /// the next frame, a slider nudged, the loupe opened, moved or closed,
+    /// Crop to Picture, the scan view, the crop tool, at random but the same
+    /// every run; the memory in use every 10 s, so a leak shows as a rising
+    /// line and a hang as the lines stopping.
+    @MainActor private static func soak(_ model: ConvertModel, seconds: Double, done: @escaping () -> Void) {
+        var seed: UInt64 = 0x5EED
+        func next() -> UInt64 { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return seed >> 33 }
+        let start = CFAbsoluteTimeGetCurrent()
+        var lastReport = 0.0, actions = 0
+        func report(_ elapsed: Double) {
+            print(String(format: "soak %5.0f s: %.2f GB in use, %d actions, %d sidebar prints",
+                         elapsed, Converter.footprint(), actions, model.thumbnails.images.count))
+            fflush(stdout)
+        }
+        func step() {
+            let elapsed = CFAbsoluteTimeGetCurrent() - start
+            if elapsed - lastReport >= 10 { lastReport = elapsed; report(elapsed) }
+            guard elapsed < seconds else { report(elapsed); model.loupeOn = false; done(); return }
+            actions += 1
+            switch next() % 12 {
+            case 0, 1: model.select(offset: 1)
+            case 2: if model.selection == model.frames.last?.url, let f = model.frames.first { model.selection = f.url }
+            case 3: model.frame.exposure = Double(next() % 21) / 10 - 1
+            case 4: model.frame.sharpness = Double(next() % 11) / 10
+            case 5: model.frame.localContrast = Double(next() % 6) / 10
+            case 6: model.loupeOn.toggle()
+            case 7: model.moveLoupe(to: CGPoint(x: Double(next() % 100) / 100, y: Double(next() % 100) / 100))
+            case 8: model.cropToPicture()
+            case 9: model.showScan.toggle()
+            case 10: model.isCropping.toggle()
+            default: model.frame.grade = Double(next() % 5)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { step() }
+        }
+        step()
+    }
     @MainActor private static var activity: NSObjectProtocol?
 
     /// Changes the exposure, waits for that print to reach the screen, and
@@ -162,6 +202,11 @@ enum SelfCheck {
             if model.loupeOn, model.loupeImage == nil || model.loupeLoading, tries < 90 { poll(model, tries: tries + 1, crop: crop); return }
             if crop, model.field != nil {
                 model.cropToPicture { poll(model, tries: tries + 1, crop: false) }
+                return
+            }
+            if let seconds = env["FLXCONVERT_SOAK"].flatMap(Double.init), !soaked {
+                soaked = true
+                soak(model, seconds: seconds) { poll(model, tries: tries + 1, crop: false) }
                 return
             }
             if env["FLXCONVERT_SWEEP"] == "1", !swept {

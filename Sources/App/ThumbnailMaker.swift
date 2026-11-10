@@ -33,8 +33,8 @@ enum ThumbnailCache {
             SHA256.hash(data: Data(text.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
         }
         // The leading number goes up when the conversion itself changes (2: the rebate finder that reads
-        // black-and-white film and falls back on the gaps between frames).
-        return hash(url.path) + "/" + hash("2|\(modified)|\(size)|\(settings[0])|\(settings[1])")
+        // black-and-white film and falls back on the gaps between frames; 3: roll film read in its gaps).
+        return hash(url.path) + "/" + hash("3|\(modified)|\(size)|\(settings[0])|\(settings[1])")
     }
 
     private static func file(_ key: String) -> URL { directory.appendingPathComponent(key + ".jpg") }
@@ -72,7 +72,7 @@ final class ThumbnailMaker {
         var key: String
     }
 
-    private let queue = DispatchQueue(label: "lab.flx.FLXFilmConvert.thumbnails", qos: .utility)
+    private let queue = DispatchQueue(label: "lab.flx.FLXFilmConvert.thumbnails", qos: .utility, autoreleaseFrequency: .workItem)
     private let lock = NSLock()
     private var generation = 0
     private var converter: Converter?

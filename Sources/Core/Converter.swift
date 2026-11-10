@@ -3,6 +3,20 @@ import CoreImage
 import ImageIO
 import CoreGraphics
 
+/// Work on a scan at full size, one at a time across the app: a 45 MP frame
+/// takes 3 to 6 GB while it is decoded, split and printed, and two at once
+/// (an export and the loupe) could push a 16 GB Mac out of memory, which
+/// stalls the app until it is force-quit. Never waited for on the main thread.
+enum FullSize {
+    private static let gate = DispatchSemaphore(value: 1)
+
+    static func run<T>(_ body: () throws -> T) rethrows -> T {
+        gate.wait()
+        defer { gate.signal() }
+        return try body()
+    }
+}
+
 /// One frame through the whole pipeline: scan -> base reference -> dyes ->
 /// print. The app and `flxconvert` both drive this.
 final class Converter {
@@ -62,14 +76,14 @@ final class Converter {
 
     /// The base reference for a frame: a hand-picked rebate if there is one,
     /// otherwise the field the rebate along the long edges gives.
-    func base(for scan: Scan, frame: FrameSettings, field: RebateField?) throws -> BaseReference {
+    func base(for scan: Scan, frame: FrameSettings, field: RebateField?, format: FrameFormat = .thirtyFive) throws -> BaseReference {
         if let pick = frame.rebatePick {
             let v = scan.median(pick)
             guard v.min() > 0 else { throw Failure.noBase("the picked area is black") }
             return .uniform(v)
         }
         if let field { return .field(field) }
-        return .field(try RebateField.detect(in: scan))
+        return .field(try RebateField.detect(in: scan, format: format))
     }
 
     func negative(of scan: Scan, roll: RollSettings, base: BaseReference,
@@ -110,6 +124,15 @@ final class Converter {
     func export(_ url: URL, roll: RollSettings, frame: FrameSettings, field: RebateField?,
                 to output: URL, format: PrintExporter.Format, maxDimension: Int?,
                 outputColorSpace: String = "sRGB", capture: CaptureInfo = CaptureInfo()) throws {
+        try FullSize.run {
+            try exportNow(url, roll: roll, frame: frame, field: field, to: output, format: format,
+                          maxDimension: maxDimension, outputColorSpace: outputColorSpace, capture: capture)
+        }
+    }
+
+    private func exportNow(_ url: URL, roll: RollSettings, frame: FrameSettings, field: RebateField?,
+                           to output: URL, format: PrintExporter.Format, maxDimension: Int?,
+                           outputColorSpace: String, capture: CaptureInfo) throws {
         let timing = ProcessInfo.processInfo.environment["FLXCONVERT_TIMING"] == "1"
         var clock = CFAbsoluteTimeGetCurrent(), steps: [String] = []
         func lap(_ name: String) {
@@ -128,7 +151,7 @@ final class Converter {
                 return prepare(decoded, url: url, roll: roll).scan
             }
             lap("flat")
-            let base = try self.base(for: scan, frame: frame, field: field)
+            let base = try self.base(for: scan, frame: frame, field: field, format: roll.format)
             lap("base")
             return (try negative(of: scan, roll: roll, base: base), scan.width, scan.height)
         }
@@ -152,7 +175,7 @@ final class Converter {
     /// shape, masks and settings. Encoded for the screen.
     func thumbnail(_ url: URL, roll: RollSettings, frame: FrameSettings, longEdge: Int = 220) throws -> PrintStage.Output {
         let scan = prepare(try Scan.load(url, maxDimension: 2048), url: url, roll: roll).scan
-        let base = try self.base(for: scan, frame: frame, field: nil)
+        let base = try self.base(for: scan, frame: frame, field: nil, format: roll.format)
         let small = scan.reduced(by: max(1, max(scan.width, scan.height) / (2 * longEdge)))
         let cmy = try negative(of: small, roll: roll, base: base)
         let scale = Converter.nativeLongEdge(url).map { Double(max(small.width, small.height)) / Double($0) } ?? 1

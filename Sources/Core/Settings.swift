@@ -10,8 +10,62 @@ import CoreGraphics
 // Every key decodes as optional, so settings saved by an earlier build keep
 // loading when a new one adds a field.
 
+/// The film's format: the frame the camera's gate exposes. Roll film (120)
+/// has no sprocket holes, and a carrier often covers its edges, so the gaps
+/// between frames are where its base shows; and its frames fill only part of
+/// a scan, anywhere along it. The proportions are nominal: gates differ from
+/// camera to camera by a few percent.
+enum FrameFormat: String, Codable, CaseIterable, Identifiable {
+    case thirtyFive = "135", sixByFourFive = "645", sixBySix = "66", sixBySeven = "67", sixByEight = "68", sixByNine = "69"
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .thirtyFive: return "35 mm"
+        case .sixByFourFive: return "6 × 4.5 (120)"
+        case .sixBySix: return "6 × 6 (120)"
+        case .sixBySeven: return "6 × 7 (120)"
+        case .sixByEight: return "6 × 8 (120)"
+        case .sixByNine: return "6 × 9 (120)"
+        }
+    }
+
+    var isRollFilm: Bool { self != .thirtyFive }
+
+    /// The picture's length along the film over its height across it: 36 x 24,
+    /// and 41.5, 56, 69.5, 76 and 84 by 56 on 120 (6 x 7 runs 67 to 72 by
+    /// camera, 6 x 8 76 to 77).
+    var aspect: Double {
+        switch self {
+        case .thirtyFive: return 36.0 / 24
+        case .sixByFourFive: return 41.5 / 56
+        case .sixBySix: return 1
+        case .sixBySeven: return 69.5 / 56
+        case .sixByEight: return 76.0 / 56
+        case .sixByNine: return 84.0 / 56
+        }
+    }
+
+    /// From what `flxconvert --format` takes: 135 or 35mm, 645, 66, 67, 68, 69 (or 6x6 and so on).
+    init?(argument: String) {
+        let a = argument.lowercased().replacingOccurrences(of: " ", with: "")
+        switch a {
+        case "135", "35", "35mm": self = .thirtyFive
+        case "645", "6x4.5", "6×4.5": self = .sixByFourFive
+        case "66", "6x6", "6×6": self = .sixBySix
+        case "67", "6x7", "6×7": self = .sixBySeven
+        case "68", "6x8", "6×8": self = .sixByEight
+        case "69", "6x9", "6×9": self = .sixByNine
+        default: return nil
+        }
+    }
+}
+
 struct RollSettings: Codable, Equatable {
     var filmStock = "kodak_portra_400"
+    /// What the rebate and the picture are looked for as.
+    var format = FrameFormat.thirtyFive
     /// nil: the paper the film's pack names.
     var printStock: String?
     /// The enlarger's yellow and magenta dichroics on top of the stock's own
@@ -45,6 +99,7 @@ struct RollSettings: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = RollSettings()
         filmStock = try c.decodeIfPresent(String.self, forKey: .filmStock) ?? d.filmStock
+        format = (try? c.decodeIfPresent(FrameFormat.self, forKey: .format)) ?? d.format
         printStock = try c.decodeIfPresent(String.self, forKey: .printStock)
         filterY = try c.decodeIfPresent(Double.self, forKey: .filterY) ?? d.filterY
         filterM = try c.decodeIfPresent(Double.self, forKey: .filterM) ?? d.filterM

@@ -17,6 +17,10 @@ struct FlatField {
     let camera: Camera?
     let width: Int
     let height: Int
+    /// The bare light's level inside the holder's window, per channel of the
+    /// decode: a scan made at the same settings, divided by the field, reads
+    /// the film's transmittance times this.
+    let level: SIMD3<Float>
     private let values: [SIMD3<Float>]
 
     enum Failure: Error, CustomStringConvertible {
@@ -60,7 +64,7 @@ struct FlatField {
         let lit = v.filter { $0.y > 0.6 * median }
         let level = SIMD3(Stats.median(lit.map { $0.x }), Stats.median(lit.map { $0.y }), Stats.median(lit.map { $0.z }))
         let values = v.map { simd_max($0 / level, SIMD3(repeating: 0.2)) }
-        return FlatField(url: url, camera: camera(of: url), width: w, height: h, values: values)
+        return FlatField(url: url, camera: camera(of: url), width: w, height: h, level: level, values: values)
     }
 
     /// The camera and lens a raw file names in its metadata.
