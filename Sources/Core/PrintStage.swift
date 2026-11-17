@@ -14,14 +14,23 @@ import CoreImage
 ///   and uniforms from `RenderSetupBuilder`);
 /// - the detail controls (sharpening and CLAHE, `DetailStage`) work on the
 ///   print's lightness;
-/// - Bloom & Glow is laid on the finished print in linear light (step 3c).
+/// - Bloom & Glow is laid on the finished print in linear light (step 3c);
+/// - the curves (`PrintCurves`) come last, on the print as its file encodes
+///   it, and the preview measures the histogram before and after them
+///   (step 3d), with FLX Film Lab's `apply_curves` and `histogram_rgb`.
 final class PrintStage {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let printAndScan: MTLComputePipelineState
     private let applyGeometry: MTLComputePipelineState
     private let encodeDisplay: MTLComputePipelineState
+    private let applyCurves: MTLComputePipelineState
+    private let histogramRGB: MTLComputePipelineState
     private let detailStage: DetailStage
+    /// The curves' table, sampled again only when the curves change.
+    private var curveTable: (curves: PrintCurves, buffer: MTLBuffer)?
+    /// Two histograms' bins, kept from one render to the next.
+    private var histogramBuffers: [MTLBuffer] = []
     private var effectsContext: CIContext?
     private static let effectsSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -39,6 +48,9 @@ final class PrintStage {
         /// The CLAHE tiles' curves this print measured, for a render of part
         /// of it to share.
         var curves: DetailStage.Curves?
+        /// The print's histogram, when asked for: the finished print's, and
+        /// the one its point curves were given.
+        var histogram: PrintHistogram?
     }
 
     init() throws {
@@ -49,14 +61,28 @@ final class PrintStage {
         self.queue = queue
         let options = MTLCompileOptions()
         options.mathMode = .fast                     // as Renderer compiles it
-        let library = try device.makeLibrary(source: try PackLibrary.shared.shaderSource(), options: options)
-        func pipeline(_ name: String) throws -> MTLComputePipelineState {
-            guard let f = library.makeFunction(name: name) else { throw Failure.missingKernel }
+        // Compiled ahead by build.sh where Xcode's Metal compiler is installed
+        // (FLX Film Lab's `ShaderLibrary`: the app's bundle, or the folder the
+        // tools run in), else compiled here from the source.
+        let library = try ShaderLibrary.make("flx", device: device, sourcePath: "FLXFilmLab/Resources/Shaders/flx.metal",
+                                             options: options) { try PackLibrary.shared.shaderSource() }
+        func pipeline(_ name: String, constants: MTLFunctionConstantValues? = nil) throws -> MTLComputePipelineState {
+            let f = try constants.map { try library.makeFunction(name: name, constantValues: $0) } ?? library.makeFunction(name: name)
+            guard let f else { throw Failure.missingKernel }
             return try device.makeComputePipelineState(function: f)
         }
-        printAndScan = try pipeline("print_and_scan")
+        // print_and_scan's plain variant: FLX Film Lab's preview keeps the
+        // print's exposure between renders (function constants 0 and 1), which
+        // a function with constants must be told even when off.
+        let plain = MTLFunctionConstantValues()
+        var off = false
+        plain.setConstantValue(&off, type: .bool, index: 0)
+        plain.setConstantValue(&off, type: .bool, index: 1)
+        printAndScan = try pipeline("print_and_scan", constants: plain)
         applyGeometry = try pipeline("apply_geometry")
         encodeDisplay = try pipeline("encode_display")
+        applyCurves = try pipeline("apply_curves")
+        histogramRGB = try pipeline("histogram_rgb")
         detailStage = try DetailStage(device: device)
     }
 
@@ -105,10 +131,11 @@ final class PrintStage {
     /// levelling leaves empty come out as `outside`, or clear for display.
     /// `forDisplay` encodes the print for the screen on the GPU and reads back
     /// a quarter of the data, as FLX Film Lab's preview does. `detailScale` is
-    /// this negative's pixels per pixel of the scan at full size.
+    /// this negative's pixels per pixel of the scan at full size. `histogram`
+    /// measures the print's histogram (the preview's).
     func print(negative cmy: [Float], width: Int, height: Int, setup: RenderSetup, recipe: Recipe,
                geometry: FrameGeometry, wholeFrame: Bool = false, forDisplay: Bool = false,
-               detail: DetailSettings = DetailSettings(), detailScale: Double = 1,
+               detail: DetailSettings = DetailSettings(), detailScale: Double = 1, histogram: Bool = false,
                outside: SIMD3<Float> = SIMD3(repeating: 0.03)) throws -> Output {
         let map = GeometryMap(geometry, sourceWidth: width, sourceHeight: height, wholeFrame: wholeFrame)
         let shape = GeometryUniforms(map)
@@ -118,10 +145,10 @@ final class PrintStage {
                              outputWidth: map.outputWidth, outputHeight: map.outputHeight, maskMap: maskMap,
                              setup: setup, recipe: recipe, glowLongEdge: max(width, height),
                              detail: detail, detailScale: detailScale, origin: .zero, frame: nil, curves: nil,
-                             forDisplay: forDisplay, coverage: wholeFrame && !map.isIdentity)
+                             forDisplay: forDisplay, coverage: wholeFrame && !map.isIdentity, histogram: histogram)
         if !forDisplay, wholeFrame && geometry.straighten != 0 { mark(&out.pixels, map: map, outside: outside) }
         return Output(pixels: out.pixels, display: out.display, width: map.outputWidth, height: map.outputHeight,
-                      map: map, curves: out.curves)
+                      map: map, curves: out.curves, histogram: out.histogram)
     }
 
     /// Part of a print, for the loupe: the pixels `region` of the print of a
@@ -156,7 +183,7 @@ final class PrintStage {
                              detail: detail, detailScale: 1,
                              origin: SIMD2(Int32(region.minX), Int32(region.minY)),
                              frame: SIMD2(Int32(map.outputWidth), Int32(map.outputHeight)), curves: curves,
-                             forDisplay: true, coverage: false)
+                             forDisplay: true, coverage: false, histogram: false)
         return (out.display ?? [], Int(region.width), Int(region.height))
     }
 
@@ -165,13 +192,18 @@ final class PrintStage {
                         maskMap: MaskRasterizer.Map?, setup: RenderSetup, recipe: Recipe,
                         glowLongEdge: Int, detail: DetailSettings, detailScale: Double, origin: SIMD2<Int32>,
                         frame: SIMD2<Int32>?, curves: DetailStage.Curves?, forDisplay: Bool,
-                        coverage: Bool) throws -> (pixels: [Float], display: [UInt8]?, curves: DetailStage.Curves?) {
+                        coverage: Bool, histogram: Bool)
+        throws -> (pixels: [Float], display: [UInt8]?, curves: DetailStage.Curves?, histogram: PrintHistogram?) {
         let negative = try texture(cmy, width: width, height: height)
         let printed = try texture([], width: ow, height: oh, writable: true)
         let toneLUT = try texture(setup.toneLUT, width: Constants.toneLutWidth, height: Constants.toneLutHeight)
         let dodgeBurn = try maskMap.map { try texture($0.data, width: $0.width, height: $0.height, format: .rg32Float) }
             ?? texture([0, 0], width: 1, height: 1, format: .rg32Float)
-        let tables = try buffer(setup.spectralTables)
+        // The spectral tables packed by band, as FLX Film Lab's renderer hands
+        // them to print_and_scan.
+        let (packed, bandCount) = Renderer.bands(setup.spectralTables)
+        let tables = try buffer(packed)
+        var bands = bandCount
         let toneShift = try buffer(setup.toneShift.isEmpty ? [0, 0] : setup.toneShift)
         var uniforms = setup.printUniforms
         uniforms.hasDodgeBurn = maskMap == nil ? 0 : 1
@@ -199,6 +231,7 @@ final class PrintStage {
         e.setBytes(&uniforms, length: MemoryLayout<PrintUniforms>.stride, index: 1)
         e.setBuffer(toneShift, offset: 0, index: 2)
         e.setBytes(&masksShape, length: MemoryLayout<GeometryUniforms>.stride, index: 3)
+        e.setBytes(&bands, length: MemoryLayout<SIMD2<Int32>>.stride, index: 4)
         dispatch(e, printAndScan, width: ow, height: oh)
         e.endEncoding()
 
@@ -227,15 +260,83 @@ final class PrintStage {
                 copy(out, to: printed, cb: cb)
             }
         }
+        // The curves, last of all, on the print as its file encodes it (the
+        // output space's transfer curve). The histogram is taken of the
+        // finished print and, for the curves' graph, of the print they were
+        // given. Straight curves are no pass at all: the print stays as it was.
+        let encoding: Int32 = recipe.outputColorSpace == "ProPhoto RGB" ? 2 : 1
+        let cover: Int32 = coverage ? 1 : 0
+        let printCurves = recipe.curves.flatMap { $0.isIdentity ? nil : $0 }
+        let bins = histogram ? try histogramBins(printCurves == nil ? 1 : 2) : []
+        if bins.count > 1 {
+            try measureHistogram(cb, of: printed, into: bins[1], encoding: encoding, coverage: cover, shape: shape)
+        }
+        if let printCurves {
+            let table = try curveBuffer(printCurves)
+            var encodingSize = SIMD2<Int32>(encoding, Int32(PrintCurves.tableSize))
+            guard let e = cb.makeComputeCommandEncoder() else { throw Failure.allocation }
+            e.setTexture(printed, index: 0)
+            e.setBuffer(table, offset: 0, index: 0)
+            e.setBytes(&encodingSize, length: MemoryLayout<SIMD2<Int32>>.stride, index: 1)
+            dispatch(e, applyCurves, width: ow, height: oh)
+            e.endEncoding()
+        }
+        if let after = bins.first {
+            try measureHistogram(cb, of: printed, into: after, encoding: encoding, coverage: cover, shape: shape)
+        }
+        func read(_ buffer: MTLBuffer) -> [UInt32] {
+            Array(UnsafeBufferPointer(start: buffer.contents().assumingMemoryBound(to: UInt32.self), count: 768))
+        }
+
         if forDisplay {
-            let encoded = try encodeForDisplay(printed, cb: cb, coverage: coverage, shape: &shape)
+            let encoded = try encodeForDisplay(printed, cb: cb, coverage: coverage, encoding: encoding, shape: &shape)
             cb.commit()
             cb.waitUntilCompleted()
-            return ([], readback8(encoded), measured())
+            return ([], readback8(encoded), measured(),
+                    bins.first.map { PrintHistogram(after: read($0), before: bins.count > 1 ? read(bins[1]) : nil) })
         }
         cb.commit()
         cb.waitUntilCompleted()
-        return (readback(printed), nil, measured())
+        return (readback(printed), nil, measured(),
+                bins.first.map { PrintHistogram(after: read($0), before: bins.count > 1 ? read(bins[1]) : nil) })
+    }
+
+    /// The curves' table on the GPU (`PrintCurves.table`).
+    private func curveBuffer(_ curves: PrintCurves) throws -> MTLBuffer {
+        if let kept = curveTable, kept.curves == curves { return kept.buffer }
+        let table = curves.table()
+        guard let buffer = table.withUnsafeBytes({
+            device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)
+        }) else { throw Failure.allocation }
+        curveTable = (curves, buffer)
+        return buffer
+    }
+
+    /// `count` histograms' bins, emptied.
+    private func histogramBins(_ count: Int) throws -> [MTLBuffer] {
+        while histogramBuffers.count < count {
+            guard let buffer = device.makeBuffer(length: 768 * MemoryLayout<UInt32>.stride,
+                                                 options: .storageModeShared) else { throw Failure.allocation }
+            histogramBuffers.append(buffer)
+        }
+        let buffers = Array(histogramBuffers.prefix(count))
+        for buffer in buffers { memset(buffer.contents(), 0, buffer.length) }
+        return buffers
+    }
+
+    /// Counts the print's pixels into `bins` as the file will encode them;
+    /// with `coverage` 1, not the corners outside a levelled frame.
+    private func measureHistogram(_ cb: MTLCommandBuffer, of print: MTLTexture, into bins: MTLBuffer,
+                                  encoding: Int32, coverage: Int32, shape: GeometryUniforms) throws {
+        var encoding = encoding, coverage = coverage, shape = shape
+        guard let e = cb.makeComputeCommandEncoder() else { throw Failure.allocation }
+        e.setTexture(print, index: 0)
+        e.setBuffer(bins, offset: 0, index: 0)
+        e.setBytes(&encoding, length: MemoryLayout<Int32>.stride, index: 1)
+        e.setBytes(&coverage, length: MemoryLayout<Int32>.stride, index: 2)
+        e.setBytes(&shape, length: MemoryLayout<GeometryUniforms>.stride, index: 3)
+        dispatch(e, histogramRGB, width: print.width, height: print.height)
+        e.endEncoding()
     }
 
     private func copy(_ from: MTLTexture, to: MTLTexture, cb: MTLCommandBuffer) {
@@ -246,7 +347,9 @@ final class PrintStage {
         blit.endEncoding()
     }
 
-    private func encodeForDisplay(_ linear: MTLTexture, cb: MTLCommandBuffer, coverage: Bool,
+    /// For the screen, with the output space's transfer curve (`encoding` 1
+    /// the sRGB curve, 2 ProPhoto's), so the image is the file's.
+    private func encodeForDisplay(_ linear: MTLTexture, cb: MTLCommandBuffer, coverage: Bool, encoding: Int32 = 1,
                                   shape: inout GeometryUniforms) throws -> MTLTexture {
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: linear.width,
                                                          height: linear.height, mipmapped: false)
@@ -255,7 +358,7 @@ final class PrintStage {
         guard let out = device.makeTexture(descriptor: d), let e = cb.makeComputeCommandEncoder() else {
             throw Failure.allocation
         }
-        var encoding: Int32 = 1                      // the sRGB transfer function
+        var encoding = encoding
         var cover: Int32 = coverage ? 1 : 0
         e.setTexture(linear, index: 0)
         e.setTexture(out, index: 1)

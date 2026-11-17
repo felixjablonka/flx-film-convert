@@ -31,6 +31,15 @@ struct FLXFilmConvertApp: App {
                 Button(model.loupeOn ? "Hide Loupe" : "Show Loupe") { model.loupeOn.toggle() }.keyboardShortcut("l")
                 Button("Reset Frame…") { model.resetFrame() }.keyboardShortcut("r", modifiers: [.command, .option])
                 Divider()
+                Button("Copy Print Settings") { model.copyPrintSettings() }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+                    .disabled(model.selection == nil)
+                Button(model.copiedPrint.map { "Paste Print Settings of \($0.source)" } ?? "Paste Print Settings") {
+                    model.pastePrintSettings()
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+                .disabled(model.copiedPrint == nil || model.selection == nil)
+                Divider()
                 Button(model.showScan ? "Show the Print" : "Show the Scan") { model.showScan.toggle() }
                     .keyboardShortcut("n")
             }
@@ -46,8 +55,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// FLXCONVERT_OPEN=folder, FLXCONVERT_SELECT=file name, FLXCONVERT_SCAN=1 for
 /// the scan view, and _FILM, _TURNS, _STRAIGHTEN, _EXPOSURE, _GRADE, _CROPPING,
 /// _CROP, _MASK, _SIZE, _FRESH for no saved settings, _SHARPNESS, _RADIUS, _MASKING, _CLAHE, _LOUPE=x,y,
-/// _ROLL_FILTER=y,m, _FRAME_FILTER=y,m, _FORMAT=66, _TAB=export, _CAMERA, _LENS, _FRAME_LENS, _DATE=1, _THUMBS=1 for the
-/// sidebar's prints, _CACHE=1 to cache them, _WAIT=seconds before the snapshot), the app
+/// _ROLL_FILTER=y,m, _FRAME_FILTER=y,m, _FORMAT=66, _CURVES=rgb:0,0 64,40 255,255 (as --curves),
+/// _SPACE=Display P3 (the export's colour space), _APPEARANCE=dark or light, _TAB=export, _CAMERA, _LENS, _FRAME_LENS, _DATE=1, _THUMBS=1 for the
+/// sidebar's prints, _CACHE=1 to cache them, _WAIT=seconds before the snapshot, _CURVE_TEST=1 to
+/// click and drag the curves editor, _PASTE_TEST=1 to copy and paste print settings), the app
 /// opens the roll, waits for the print (and the loupe), draws its own
 /// window into the PNG and quits. Nothing is captured from the screen.
 enum SelfCheck {
@@ -70,6 +81,7 @@ enum SelfCheck {
     @MainActor static func start(_ model: ConvertModel) -> Bool {
         guard active else { return false }
         if env["FLXCONVERT_ACTIVE"] == "1" { lookActive() }
+        if let a = env["FLXCONVERT_APPEARANCE"] { NSApp.appearance = NSAppearance(named: a == "dark" ? .darkAqua : .aqua) }
         model.persists = false
         ThumbnailCache.enabled = env["FLXCONVERT_CACHE"] == "1"
         model.makesThumbnails = env["FLXCONVERT_THUMBS"] == "1"
@@ -110,6 +122,8 @@ enum SelfCheck {
         if let v = env["FLXCONVERT_RADIUS"].flatMap(Double.init) { model.frame.sharpenRadius = v }
         if let v = env["FLXCONVERT_MASKING"].flatMap(Double.init) { model.frame.sharpenMasking = v }
         if let v = env["FLXCONVERT_CLAHE"].flatMap(Double.init) { model.frame.localContrast = v }
+        if let c = env["FLXCONVERT_CURVES"] { model.frame.curves = PrintCurves(spec: c) }
+        if let space = env["FLXCONVERT_SPACE"] { model.outputColorSpace = space }
         if let p = env["FLXCONVERT_LOUPE"]?.split(separator: ",").compactMap({ Double($0) }), p.count == 2 {
             model.loupeCentre = CGPoint(x: p[0], y: p[1])
             model.loupeOn = true
@@ -128,6 +142,140 @@ enum SelfCheck {
     }
 
     @MainActor private static var swept = false
+    @MainActor private static var probeWindow: NSWindow?
+
+    /// Copy and paste of print settings (FLXCONVERT_PASTE_TEST): a print with
+    /// every kind of setting on the frame on screen, copied; pasted onto a
+    /// frame not on screen that has its own film, rebate, crop, masks and
+    /// print (the question answered yes), onto one whose question is answered
+    /// no, and onto the frame on screen. Prints PASS or FAIL, then quits.
+    @MainActor private static func pasteTest(_ model: ConvertModel) {
+        guard model.frames.count >= 3, let a = model.selection,
+              let i = model.frames.firstIndex(where: { $0.url == a }) else { print("paste test: needs three frames"); exit(1) }
+        let b = model.frames[(i + 1) % model.frames.count].url, c = model.frames[(i + 2) % model.frames.count].url
+        var failed = false
+        func check(_ what: String, _ ok: Bool) { if !ok { failed = true }; print("paste test: \(what) \(ok ? "as it should be" : "WRONG")") }
+
+        // The source: every print setting moved, and a film, rebate, crop and mask of its own.
+        model.frame = FrameSettings()
+        model.frame.exposure = 0.7; model.frame.brightness = 40; model.frame.grade = 3
+        model.frame.shadowGrade = 0.2; model.frame.highlightGrade = -0.2; model.frame.shadows = 0.3
+        model.frame.highlights = -0.25; model.frame.toe = 0.1; model.frame.shoulder = 0.15; model.frame.snap = 0.1
+        model.frame.shadowCMY = CMYOffset(cyan: 0.02, magenta: 0, yellow: -0.01); model.frame.preflash = 0.05
+        model.frame.filtration = Filtration(yellow: 6, magenta: -4)
+        model.frame.sharpness = 0.4; model.frame.localContrast = 0.3
+        model.frame.curves = PrintCurves(spec: "rgb:0,0 64,52 192,205 255,255")
+        model.frame.filmStock = "kodak_gold_200"; model.frame.rebatePick = CGRect(x: 0.01, y: 0.02, width: 0.3, height: 0.03)
+        model.frame.geometry.setStraighten(2)
+        model.addMask(.gradient)
+        let source = model.frame
+        model.copyPrintSettings()
+        check("copied without film, rebate, crop or masks",
+              model.copiedPrint?.settings == source.printOnly && model.copiedPrint?.settings.masks.isEmpty == true
+              && model.copiedPrint?.settings.filmStock == nil)
+
+        // Onto a frame not on screen, with all of its own.
+        var own = FrameSettings()
+        own.exposure = -0.4; own.filmStock = "kodak_ektar_100"; own.rebatePick = CGRect(x: 0.5, y: 0.01, width: 0.2, height: 0.02)
+        own.geometry.quarterTurns = 1; own.masks = source.masks + source.masks
+        model.store(own, for: b)
+        model.pasteAnswers = true
+        model.pastePrintSettings(to: b)
+        let pasted = model.settings(of: b)
+        check("frame off screen takes the print", pasted.printOnly == source.printOnly)
+        check("frame off screen keeps its film, rebate, crop and masks",
+              pasted.filmStock == own.filmStock && pasted.rebatePick == own.rebatePick
+              && pasted.geometry == own.geometry && pasted.masks == own.masks)
+
+        // Answered no: nothing changes.
+        var other = FrameSettings(); other.exposure = 0.3
+        model.store(other, for: c)
+        model.pasteAnswers = false
+        model.pastePrintSettings(to: c)
+        check("a frame whose question is answered no stays", model.settings(of: c) == other)
+
+        // Onto the frame on screen.
+        model.pasteAnswers = true
+        model.selection = c
+        model.pastePrintSettings()
+        check("frame on screen takes the print", model.frame.printOnly == source.printOnly && model.frame.filmStock == nil
+              && model.settings(of: c) == model.frame)
+        print("paste test: \(failed ? "FAIL" : "PASS")")
+        exit(failed ? 1 : 0)
+    }
+
+    /// The curves editor clicked and dragged as a hand would (FLXCONVERT_CURVE_TEST):
+    /// the histogram and curves as The Print shows them, in a window of their
+    /// own 300 points wide, given mouse events. A click on the straight curve
+    /// adds a point and drags it up, a click below the curve adds a second,
+    /// that one is dragged off the graph and let go, which takes it away, and
+    /// the white end is pulled down.
+    /// Prints each step's points and PASS or FAIL, then quits.
+    @MainActor private static func curveTest(_ model: ConvertModel) {
+        model.frame.curves = nil
+        struct Probe: View {
+            let model: ConvertModel
+            var body: some View { VStack(spacing: 0) { PrintGraphs.of(model) }.frame(width: 300) }
+        }
+        let host = NSHostingView(rootView: Probe(model: model))
+        let size = host.fittingSize
+        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView = host
+        window.orderFront(nil)
+        probeWindow = window
+        // The graph is the bottom 176 points less the 6 below it, its plot 6 in.
+        func at(_ x: Double, _ y: Double) -> CGPoint { CGPoint(x: 6 + 288 * x, y: 12 + 164 * y) }
+        var clock = ProcessInfo.processInfo.systemUptime
+        func send(_ type: NSEvent.EventType, _ p: CGPoint) {
+            clock += 0.02
+            if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: clock,
+                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                          clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1) {
+                window.sendEvent(e)
+            }
+        }
+        func points() -> String {
+            (model.frame.curves?.rgb ?? PrintCurves.straight)
+                .map { String(format: "(%.2f, %.2f)", $0.x, $0.y) }.joined(separator: " ")
+        }
+        func near(_ want: [(Double, Double)]) -> Bool {
+            let p = model.frame.curves?.rgb ?? PrintCurves.straight
+            return p.count == want.count && zip(p, want).allSatisfy { abs($0.x - $1.0) < 0.02 && abs($0.y - $1.1) < 0.02 }
+        }
+        let strokes: [(from: (Double, Double), to: (Double, Double), want: [(Double, Double)])] = [
+            ((0.5, 0.5), (0.5, 0.7), [(0, 0), (0.5, 0.7), (1, 1)]),
+            ((0.25, 0.2), (0.25, 0.15), [(0, 0), (0.25, 0.15), (0.5, 0.7), (1, 1)]),
+            ((0.25, 0.15), (0.25, -0.5), [(0, 0), (0.5, 0.7), (1, 1)]),
+            ((1, 1), (1, 0.85), [(0, 0), (0.5, 0.7), (1, 0.85)]),
+        ]
+        var failed = false
+        func stroke(_ k: Int) {
+            guard k < strokes.count else {
+                print("curve test: \(failed ? "FAIL" : "PASS")")
+                exit(failed ? 1 : 0)
+            }
+            let s = strokes[k]
+            let a = at(s.from.0, s.from.1), b = at(s.to.0, s.to.1)
+            send(.leftMouseDown, a)
+            var i = 0
+            func drag() {
+                i += 1
+                let t = Double(i) / 4
+                send(.leftMouseDragged, CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t))
+                if i < 4 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { drag() }; return }
+                send(.leftMouseUp, b)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    let ok = near(s.want)
+                    if !ok { failed = true }
+                    print("curve test, stroke \(k + 1): \(points()) \(ok ? "as it should be" : "WRONG")")
+                    stroke(k + 1)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { drag() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { stroke(0) }
+    }
     @MainActor private static var soaked = false
 
     /// A restless user for `seconds` (FLXCONVERT_SOAK): every 0.3 s one of
@@ -170,10 +318,12 @@ enum SelfCheck {
     @MainActor private static var activity: NSObjectProtocol?
 
     /// Changes the exposure, waits for that print to reach the screen, and
-    /// changes it again, 40 times: the round trip a dragged slider waits for
-    /// (main thread, render, publication), free of timer throttling.
+    /// changes it again, 40 times (FLXCONVERT_SWEEP_COUNT): the round trip a
+    /// dragged slider waits for (main thread, render, publication), free of
+    /// timer throttling.
     @MainActor private static func sweep(_ model: ConvertModel, done: @escaping () -> Void) {
         var latencies: [Double] = []
+        let n = max(env["FLXCONVERT_SWEEP_COUNT"].flatMap(Int.init) ?? 40, 2)
         var sent = CFAbsoluteTimeGetCurrent()
         var k = 0
         func step() {
@@ -181,14 +331,32 @@ enum SelfCheck {
             sent = CFAbsoluteTimeGetCurrent()
             model.frame.exposure = 1 + 0.5 * sin(Double(k) / 5)
         }
+        // The main thread's own time, drawing included: from the first change
+        // to half a second after the last print, when the screen has caught up.
+        func mainThreadSeconds() -> Double {
+            var info = thread_basic_info()
+            var count = mach_msg_type_number_t(MemoryLayout<thread_basic_info>.size / MemoryLayout<integer_t>.size)
+            let result = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                    thread_info(pthread_mach_thread_np(pthread_self()), thread_flavor_t(THREAD_BASIC_INFO), $0, &count)
+                }
+            }
+            guard result == KERN_SUCCESS else { return 0 }
+            return Double(info.user_time.seconds + info.system_time.seconds)
+                + Double(info.user_time.microseconds + info.system_time.microseconds) / 1e6
+        }
+        let cpu0 = mainThreadSeconds()
         model.preview.onImage = {
             latencies.append(CFAbsoluteTimeGetCurrent() - sent)
-            if latencies.count >= 40 {
+            if latencies.count >= n {
                 model.preview.onImage = nil
                 let sorted = latencies.sorted()
-                print(String(format: "sweep: 40 changes, round trip median %.1f ms, slowest %.1f ms, mean %.1f ms",
-                             sorted[20] * 1000, sorted[39] * 1000, latencies.reduce(0, +) / 40 * 1000))
-                DispatchQueue.main.async { done() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    print(String(format: "sweep: %d changes, round trip median %.1f ms, slowest %.1f ms, mean %.1f ms; main thread %.1f ms a change",
+                                 n, sorted[n / 2] * 1000, sorted[n - 1] * 1000, latencies.reduce(0, +) / Double(n) * 1000,
+                                 (mainThreadSeconds() - cpu0) / Double(n) * 1000))
+                    done()
+                }
             } else {
                 DispatchQueue.main.async { step() }
             }
@@ -217,6 +385,8 @@ enum SelfCheck {
                 }
                 return
             }
+            if env["FLXCONVERT_CURVE_TEST"] == "1" { curveTest(model); return }
+            if env["FLXCONVERT_PASTE_TEST"] == "1" { pasteTest(model); return }
             if env["FLXCONVERT_MASK"] == "1", model.frame.masks.isEmpty, model.displayMap != nil {
                 model.addMask(.gradient)
                 model.addMask(.oval)
@@ -286,6 +456,15 @@ struct ContentView: View {
                 Button { model.turn(clockwise: false) } label: { Label("Turn Left", systemImage: "rotate.left") }
                 Button { model.turn(clockwise: true) } label: { Label("Turn Right", systemImage: "rotate.right") }
                 Toggle(isOn: $model.isCropping) { Label("Crop", systemImage: "crop") }
+                ControlGroup {
+                    Button { model.copyPrintSettings() } label: { Label("Copy Print Settings", systemImage: "doc.on.doc") }
+                        .help("Copy this frame's print settings: The Print, Shadows & Highlights, its colour balance and regional colour, Detail, Bloom & Glow and the curves. Not its film, rebate, crop or masks. ⇧⌘C")
+                        .disabled(model.selection == nil)
+                    Button { model.pastePrintSettings() } label: { Label("Paste Print Settings", systemImage: "doc.on.clipboard") }
+                        .help(model.copiedPrint.map { "Paste the print settings of \($0.source) onto this frame, which keeps its film, rebate, crop and masks. ⇧⌘V" }
+                              ?? "Paste print settings copied from another frame. ⇧⌘V")
+                        .disabled(model.copiedPrint == nil || model.selection == nil)
+                } label: { Label("Print Settings", systemImage: "doc.on.doc") }
                 Toggle(isOn: $model.loupeOn) { Label("Loupe", systemImage: "magnifyingglass") }
                     .help("The print at 100%, from the scan at full size. Drag it over the print. ⌘L")
                 Button { inspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
@@ -323,6 +502,12 @@ struct FrameList: View {
                             FrameRow(frame: frame, thumbnails: thumbnails, note: model.frameNotes[frame.url])
                                 .tag(frame.url).id(frame.url)
                                 .contextMenu {
+                                    Button("Copy Print Settings") { model.copyPrintSettings(from: frame.url) }
+                                    Button(model.copiedPrint.map { "Paste Print Settings of \($0.source)" } ?? "Paste Print Settings") {
+                                        model.pastePrintSettings(to: frame.url)
+                                    }
+                                    .disabled(model.copiedPrint == nil)
+                                    Divider()
                                     Button("Use as Flat Field for This Roll") { model.useAsFlatField(frame.url) }
                                 }
                         }

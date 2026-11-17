@@ -14,23 +14,46 @@ cd "$(dirname "$0")"
 
 APP_NAME="FLX Film Convert"
 # The release this builds; CHANGELOG.md names what is in it.
-VERSION="${VERSION:-0.2.0}"
+VERSION="${VERSION:-0.3.0}"
 APP="$APP_NAME.app"
 BUNDLE_ID="lab.flx.FLXFilmConvert"
 TARGET="arm64-apple-macosx26.0"
-# The Command Line Tools ship no plugin for SwiftUI's @State macro, which
-# the newest SDK needs; FLX Film Lab's build.sh picks the newest installed SDK
-# that compiles SwiftUI without it, and records it as SDKROOT. Same here.
+# The SDK the releases are built with on GitHub (macos-26, Xcode 26). SwiftUI
+# and AppKit behave as the SDK an app records, so a local build on a newer
+# SDK (Xcode 27's, once Xcode is selected) would behave unlike the release.
+# As FLX Film Lab's build.sh: that SDK first, wherever it is installed, then
+# the newest that compiles SwiftUI with this toolchain (the Command Line Tools
+# ship no plugin for @State's macro). RELEASE_SDK= overrides it.
+RELEASE_SDK="${RELEASE_SDK:-26.5}"
 default_sdk="$(xcrun --show-sdk-path)"
 probe="build/sdk-probe.swift"
 mkdir -p build
 printf 'import SwiftUI\nstruct Probe: View { @State var n = 0; var body: some View { Text("\\(n)") } }\n' > "$probe"
 SDK=""
-for sdk in "$default_sdk" $(ls -d "$(dirname "$default_sdk")"/MacOSX[0-9]*.sdk 2>/dev/null | sort -V -r); do
+for sdk in "$(dirname "$default_sdk")/MacOSX$RELEASE_SDK.sdk" "/Library/Developer/CommandLineTools/SDKs/MacOSX$RELEASE_SDK.sdk" \
+           "$default_sdk" $(ls -d "$(dirname "$default_sdk")"/MacOSX[0-9]*.sdk 2>/dev/null | sort -V -r); do
+  [[ -d "$sdk" ]] || continue
   if swiftc -typecheck -parse-as-library -sdk "$sdk" -target "$TARGET" "$probe" >/dev/null 2>&1; then SDK="$sdk"; break; fi
 done
 [[ -n "$SDK" ]] || { echo "error: no installed macOS SDK compiles SwiftUI with this toolchain" >&2; exit 1; }
+[[ "$(basename "$SDK")" == "MacOSX$RELEASE_SDK.sdk" ]] || echo "    using $(basename "$SDK"): MacOSX$RELEASE_SDK.sdk, the releases' SDK, is not installed or does not compile"
 export SDKROOT="$SDK"
+
+# The engine's shaders compiled ahead with Xcode's Metal compiler, as FLX Film
+# Lab's build.sh compiles them, into build/Shaders: where FLX Film Lab's
+# ShaderLibrary looks beside an executable (flxconvert, flxchart), and copied
+# into the app. Without the compiler, they compile from source at launch.
+SHADERS="build/Shaders"
+build_shaders() {
+  xcrun -sdk macosx metal --version >/dev/null 2>&1 || { echo "    (no Metal compiler: the shaders compile from source at launch)"; return 0; }
+  local source=engine/FLXFilmLab/Resources/Shaders/flx.metal
+  [[ -f "$SHADERS/flx.metallib" && "$SHADERS/flx.metallib" -nt "$source" && "$SHADERS/flx.metallib" -nt build.sh ]] && return 0
+  echo "==> compiling the shaders, flx.metal"
+  mkdir -p "$SHADERS"
+  xcrun -sdk macosx metal -c -fmetal-math-mode=fast -mmacosx-version-min=26.0 "$source" -o "$SHADERS/flx.air"
+  xcrun -sdk macosx metallib "$SHADERS/flx.air" -o "$SHADERS/flx.metallib"
+  rm -f "$SHADERS/flx.air"
+}
 engine=()
 while read -r f; do [[ -n "$f" ]] && engine+=("engine/$f"); done < engine/SOURCES
 core=(Sources/Core/*.swift)
@@ -50,6 +73,7 @@ if [[ "${1:-}" == "strict" ]]; then
   echo "$errors"; exit 1
 fi
 
+build_shaders
 echo "==> flxconvert"
 swiftc -O -sdk "$SDK" -target "$TARGET" -module-name FLXFilmConvert -o build/flxconvert \
   "${engine[@]}" "${core[@]}" Sources/CLI/main.swift
@@ -62,6 +86,7 @@ if [[ "${1:-}" == "test" ]]; then
   echo "==> build/unbundled/FLXFilmConvert (run it from engine/)"
   swiftc -O -parse-as-library -sdk "$SDK" -target "$TARGET" -module-name FLXFilmConvert \
     -o build/unbundled/FLXFilmConvert "${engine[@]}" "${core[@]}" Sources/App/*.swift
+  if [[ -f "$SHADERS/flx.metallib" ]]; then mkdir -p build/unbundled/Shaders; cp "$SHADERS/flx.metallib" build/unbundled/Shaders/; fi
   exit 0
 fi
 
@@ -81,7 +106,26 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Shaders"
 mv "build/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
 cp -R engine/FLXFilmLab/Resources/packs "$APP/Contents/Resources/"
 cp engine/FLXFilmLab/Resources/Shaders/flx.metal "$APP/Contents/Resources/Shaders/"
-[[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
+# the shaders compiled ahead, beside their source, which stays the fallback
+[[ -f "$SHADERS/flx.metallib" ]] && cp "$SHADERS/flx.metallib" "$APP/Contents/Resources/Shaders/"
+# The icon: Icon Composer's layered AppIcon.icon (tools/icon/make_icon.py),
+# compiled by Xcode's actool into Assets.car, which macOS 26 draws in Liquid
+# Glass with its dark, clear and tinted forms; without Xcode, the flat icns.
+icon_name=""
+if [[ -d Resources/AppIcon.icon ]] && xcrun --find actool >/dev/null 2>&1; then
+  echo "==> compiling the icon, AppIcon.icon"
+  if xcrun actool Resources/AppIcon.icon --compile "$APP/Contents/Resources" \
+       --platform macosx --minimum-deployment-target 26.0 --app-icon AppIcon \
+       --output-partial-info-plist build/AppIcon-info.plist \
+       --output-format human-readable-text --errors --warnings >build/actool.log 2>&1 \
+     && [[ -f "$APP/Contents/Resources/Assets.car" ]]; then
+    icon_name="<key>CFBundleIconName</key><string>AppIcon</string>"
+  else
+    echo "    (actool failed, see build/actool.log; the flat AppIcon.icns instead)"
+    rm -f "$APP/Contents/Resources/Assets.car"
+  fi
+fi
+[[ -z "$icon_name" && -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 cp NOTICE.md LICENSE "$APP/Contents/Resources/" 2>/dev/null || true
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -92,6 +136,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  $icon_name
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>1</string>

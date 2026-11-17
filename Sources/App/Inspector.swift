@@ -341,6 +341,7 @@ struct PrintSection: View {
 
     var body: some View {
         PanelSection("The Print") {
+            PrintGraphs.of(model)
             LabeledSlider(title: "Exposure", value: $model.frame.exposure, range: -4...4, step: 0.05,
                           format: "%+.2f stops", reset: 0, caption: "the enlarger timer; + is a lighter print").equatable()
             HStack {
@@ -369,6 +370,39 @@ struct PrintSection: View {
         }
     }
 
+}
+
+/// The histogram and the curves (FLX Film Lab's, `CurvesView.swift`): they
+/// follow every print, so they watch the preview themselves, and a finished
+/// print redraws them and nothing else of the inspector. Equal while the
+/// curves are: a slider moving elsewhere in the print does not redraw them,
+/// only the histogram it brings back does.
+struct PrintGraphs: View, Equatable {
+    let preview: Preview
+    /// The curves as this view was made with them, for the comparison.
+    let curves: PrintCurves?
+    /// The curves themselves, read and written live (`ConvertModel.curvesNow`,
+    /// unwatched). The editor reads them back within one gesture (a click adds
+    /// a point, then moves it) before this view is made again; a copy taken
+    /// when it was made would still hold the old points, and the click would
+    /// move the end point instead.
+    @Binding var edited: PrintCurves?
+
+    static func == (a: PrintGraphs, b: PrintGraphs) -> Bool { a.preview === b.preview && a.curves == b.curves }
+
+    /// As The Print shows them, for the frame on screen (and the self-check's
+    /// curve test).
+    @MainActor static func of(_ model: ConvertModel) -> some View {
+        PrintGraphs(preview: model.preview, curves: model.frame.curves,
+                    edited: Binding(get: { model.curvesNow }, set: { model.frame.curves = $0 })).equatable()
+    }
+
+    var body: some View {
+        HistogramView(bins: preview.histogram?.after)
+            .padding(.bottom, 6)
+        CurvesEditor(curves: $edited, histogram: preview.histogram)
+            .padding(.bottom, 6)
+    }
 }
 
 struct ToneSection: View {

@@ -68,10 +68,12 @@ enum ExportMetadata {
         var speed: Int?
     }
 
-    /// The stocks whose names carry no speed, at the speed their sheets rate
-    /// them to daylight (Ortho Plus is ISO 40 to tungsten).
+    /// The stocks whose names carry no speed, or a number that is not one
+    /// ("Double-X 5222"), at the speed their sheets rate them to daylight
+    /// (Ortho Plus is ISO 40 to tungsten, Double-X 5222 EI 200).
     static let unnamedSpeeds: [String: Int] = [
         "ilford_hp5_plus": 400, "ilford_fp4_plus": 125, "ilford_pan_f_plus": 50, "ilford_ortho_plus": 80,
+        "kodak_double_x_5222": 250,
     ]
 
     /// The speed a stock is rated at, from its name ("Portra 800 (Push 1)"

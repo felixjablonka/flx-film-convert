@@ -110,12 +110,12 @@ final class Converter {
     /// `detailScale`: the negative's pixels per pixel of the scan at full size.
     func print(negative: [Float], width: Int, height: Int, roll: RollSettings, frame: FrameSettings,
                wholeFrame: Bool = false, forDisplay: Bool = false, detailScale: Double = 1,
-               outputColorSpace: String = "sRGB") throws -> PrintStage.Output {
+               outputColorSpace: String = "sRGB", histogram: Bool = false) throws -> PrintStage.Output {
         let recipe = Recipe.forPrint(roll: roll, frame: frame, outputColorSpace: outputColorSpace)
         let setup = try RenderSetupBuilder.build(recipe: recipe, exposureEV: 0)
         return try printStage.print(negative: negative, width: width, height: height, setup: setup, recipe: recipe,
                                     geometry: frame.geometry, wholeFrame: wholeFrame, forDisplay: forDisplay,
-                                    detail: frame.detail, detailScale: detailScale)
+                                    detail: frame.detail, detailScale: detailScale, histogram: histogram)
     }
 
     /// Decodes, converts and writes one frame; `maxDimension` nil is the

@@ -1,11 +1,15 @@
 FLXFilmLab/Model/Constants.swift
 FLXFilmLab/Model/ProfilePack.swift
 FLXFilmLab/Model/Recipe.swift
+FLXFilmLab/Model/StockChoice.swift
+FLXFilmLab/Model/PrintCurves.swift
 FLXFilmLab/Model/FrameGeometry.swift
 FLXFilmLab/Engine/FilmMath.swift
 FLXFilmLab/Engine/ToneCurve.swift
 FLXFilmLab/Engine/PackLibrary.swift
 FLXFilmLab/Engine/Renderer.swift
+FLXFilmLab/Engine/ShaderLibrary.swift
+FLXFilmLab/Engine/PassTimer.swift
 FLXFilmLab/Engine/RenderSetupBuilder.swift
 FLXFilmLab/Engine/MaskRasterizer.swift
 FLXFilmLab/Engine/RawLoader.swift

@@ -8,13 +8,15 @@ import simd
 //   flxconvert <scan.raw> <out.jpg|tif|png> --film STOCK [--paper STOCK] [--format 135|645|66|67|68|69]
 //              [--exposure STOPS] [--grade R] [--filter-y CC] [--filter-m CC]
 //              [--pick x0,x1,y0,y1] [--turns N] [--straighten DEG] [--size PX]
-//              [--sharpness K] [--radius PX] [--masking 0-1] [--clahe 0-1]
+//              [--sharpness K] [--radius PX] [--masking 0-1] [--clahe 0-1] [--curves SPEC]
 //              [--camera TEXT] [--lens TEXT] [--date YYYY-MM-DD] [--ei N] [--notes TEXT]
 //   flxconvert --read-metadata <file>...      what an exported file says about itself
 //   flxconvert --find-rebate [--gaps] --film STOCK <scan>...   the base each scan gives (--gaps: the
 //              gaps between frames alone); --find-picture likewise, the picture's corners
 //   flxconvert --grey-ramp --film STOCK [--paper STOCK] [--exposure STOPS]
 //
+// --curves: point curves on the finished print, each channel its name and its
+// points on the 0-255 scale, "rgb:0,0 64,48 192,212 255,255;blue:0,12 255,255".
 // Without --pick, the base is the rebate along both long edges. --grey-ramp
 // prints the stock's own grey axis and reports the print's CIELAB per step.
 
@@ -90,6 +92,12 @@ frame.sharpness = option("--sharpness").flatMap(Double.init) ?? frame.sharpness
 frame.sharpenRadius = option("--radius").flatMap(Double.init) ?? 1
 frame.sharpenMasking = option("--masking").flatMap(Double.init) ?? 0
 frame.localContrast = option("--clahe").flatMap(Double.init) ?? 0
+if let spec = option("--curves") {
+    guard let curves = PrintCurves(spec: spec) else {
+        fail("--curves: channels apart by ;, each rgb, red, green or blue, a colon and in,out points (0-255) apart by spaces")
+    }
+    frame.curves = curves
+}
 frame.geometry.quarterTurns = option("--turns").flatMap(Int.init) ?? 0
 frame.geometry.setStraighten(option("--straighten").flatMap(Double.init) ?? 0)
 var capture = CaptureInfo()
@@ -107,6 +115,9 @@ if let p = option("--pick").map(numbers), p.count == 4 {
 
 do {
     let converter = try Converter()
+    if ProcessInfo.processInfo.environment["FLXCONVERT_TIMING"] == "1" {
+        print("shaders: \(ShaderLibrary.loadedAhead.contains("flx") ? "compiled ahead (flx.metallib)" : "compiled from source")")
+    }
     if args.contains("--grey-ramp") {
         let pack = try PackLibrary.shared.pack(film)
         let curves = pack.normalizedDensityCurves

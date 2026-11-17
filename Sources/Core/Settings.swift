@@ -157,6 +157,10 @@ struct FrameSettings: Codable, Equatable {
     var sharpenRadius: Double = 1
     var sharpenMasking: Double = 0
     var localContrast: Double = 0
+    /// Point curves on the finished print (FLX Film Lab's `PrintCurves`),
+    /// after everything else, on the print as its file encodes it. `nil`, as
+    /// in every frame set before there were curves, leaves the print as it is.
+    var curves: PrintCurves?
 
     var detail: DetailSettings {
         DetailSettings(sharpness: sharpness, radius: sharpenRadius, masking: sharpenMasking, localContrast: localContrast)
@@ -191,7 +195,29 @@ struct FrameSettings: Codable, Equatable {
         sharpenRadius = try c.decodeIfPresent(Double.self, forKey: .sharpenRadius) ?? d.sharpenRadius
         sharpenMasking = try c.decodeIfPresent(Double.self, forKey: .sharpenMasking) ?? d.sharpenMasking
         localContrast = try c.decodeIfPresent(Double.self, forKey: .localContrast) ?? d.localContrast
+        curves = try? c.decodeIfPresent(PrintCurves.self, forKey: .curves)
     }
+}
+
+extension FrameSettings {
+    /// This frame with `source`'s print settings, as Paste Print Settings puts
+    /// them: The Print, Shadows & Highlights, the frame's colour balance and
+    /// regional colour, pre-flash, Detail, Bloom & Glow and the curves. Not the
+    /// conversion, which stays this frame's: its own film and a rebate picked
+    /// by hand. Nor what belongs to the picture alone, as FLX Film Lab's
+    /// paste keeps it: the crop and straightening, and the dodge-and-burn masks.
+    func withPrint(of source: FrameSettings) -> FrameSettings {
+        var f = source
+        f.filmStock = filmStock
+        f.rebatePick = rebatePick
+        f.geometry = geometry
+        f.masks = masks
+        return f
+    }
+
+    /// The print settings alone, everything else as a new frame has it: what
+    /// Copy Print Settings keeps, and what two frames' prints compare by.
+    var printOnly: FrameSettings { FrameSettings().withPrint(of: self) }
 }
 
 extension Recipe {
@@ -237,8 +263,34 @@ extension Recipe {
         r.effects = frame.effects
         r.masks = frame.masks
         r.frameGeometry = frame.geometry
+        r.curves = frame.curves
         r.outputColorSpace = outputColorSpace
         return r
+    }
+}
+
+extension PrintCurves {
+    /// Curves written out as `flxconvert --curves` and the self-check take
+    /// them: channels apart by `;`, each its name, a colon and its points as
+    /// `in,out` pairs on the 0...255 scale of an 8-bit file, apart by
+    /// spaces. `rgb:0,0 64,48 192,212 255,255;blue:0,12 255,255`. Nil if
+    /// it does not read; straight curves read, and leave the print as it is.
+    init?(spec: String) {
+        var curves = PrintCurves()
+        for part in spec.split(separator: ";") {
+            let halves = part.split(separator: ":", maxSplits: 1)
+            guard halves.count == 2,
+                  let channel = Channel(rawValue: halves[0].trimmingCharacters(in: .whitespaces).lowercased()) else { return nil }
+            var points: [CurvePoint] = []
+            for pair in halves[1].split(separator: " ") {
+                let v = pair.split(separator: ",").compactMap { Double($0) }
+                guard v.count == 2 else { return nil }
+                points.append(CurvePoint(x: v[0] / 255, y: v[1] / 255))
+            }
+            guard points.count >= 2 else { return nil }
+            curves[channel] = points
+        }
+        self = curves
     }
 }
 

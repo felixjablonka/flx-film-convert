@@ -7,9 +7,9 @@ Copyright © 2026 Felix Jablonka.
 
 Copyright © 2026 Felix Jablonka — <https://github.com/felixjablonka/flx-film-lab>
 
-FLX Film Convert prints with FLX Film Lab's engine. `engine/` is a snapshot of FLX Film Lab 1.3.0's
-engine sources, its Metal shader and its film and paper data, with the Ilford stocks of 1.4.0,
-copied by `sync-engine.sh` (`engine/SNAPSHOT` names the commit), and built unchanged. These files
+FLX Film Convert prints with FLX Film Lab's engine. `engine/` is a snapshot of FLX Film Lab 2.0.0's
+engine sources, its Metal shader and its film and paper data, copied by `sync-engine.sh`
+(`engine/SNAPSHOT` names the commit), and built unchanged. These files
 in `Sources/` are FLX Film Lab's too, copied and adapted:
 
 - `Sources/App/CropOverlay.swift` and `Sources/App/MaskOverlay.swift`: the crop and the
@@ -17,6 +17,7 @@ in `Sources/` are FLX Film Lab's too, copied and adapted:
 - `Sources/App/ControlVocabulary.swift`: the sliders' photographic names and their mapping onto the
   engine's darkroom quantities
 - `Sources/Core/PrintExporter.swift`: the exporter, writing the files' profile and metadata
+- `Sources/App/CurvesView.swift`: the histogram and the curves editor
 
 The inspector's slider rows (a double-click resets, a dot marks a changed value) and its sections
 follow FLX Film Lab's.
@@ -59,6 +60,6 @@ NegPy is GPLv3.
 
 ## The app icon and the screenshots
 
-`Resources/AppIcon.icns`, `docs/images/icon.png` and `tools/icon/social-preview.png` are © Felix
-Jablonka, all rights reserved. Neither the GPLv3 nor CC BY-SA covers them; a fork needs its own icon. The same holds for the
+`Resources/AppIcon.icns`, `Resources/AppIcon.icon`, `docs/images/icon.png` and
+`tools/icon/social-preview.png` are © Felix Jablonka, all rights reserved. Neither the GPLv3 nor CC BY-SA covers them; a fork needs its own icon. The same holds for the
 photographs in the screenshots, `docs/images/overview.jpg`, `scan.jpg` and `loupe.jpg`.

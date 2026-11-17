@@ -24,9 +24,12 @@ code is in `Sources/`: `Core/` for the conversion, `App/` for the Mac app, `CLI/
    start with the same stop, agreeing with the CPU's to 0.000001 D (median) and 0.0006 D
    (p99.99).
 4. **Print:** FLX Film Lab's `print_and_scan` kernel, fed as FLX Film Lab feeds it
-   (`Sources/Core/PrintStage.swift`). The stock's base goes back in, and the print time is the
-   stock's own mid-grey one. Grain, couplers and halation stay off, because the scan has the real
-   film's.
+   (`Sources/Core/PrintStage.swift`): the spectral tables packed by band (`Renderer.bands`), its
+   plain variant (FLX Film Lab's preview also keeps the print's exposure between renders; here every
+   render prints afresh), from the shader library `build.sh` compiles ahead with Xcode's Metal
+   compiler (FLX Film Lab's `ShaderLibrary`; without it, compiled from source as the app starts,
+   the same to the bit). The stock's base goes back in, and the print time is the stock's own
+   mid-grey one. Grain, couplers and halation stay off, because the scan has the real film's.
 
 Left out on purpose, because the real film already did them: negative exposure and white balance,
 graduated exposure, couplers, halation, scatter, grain, curve gamma.
@@ -37,13 +40,21 @@ The roll carries what belongs to the film and its processing: the film, the pape
 balance (the enlarger's yellow and magenta filters) and the per-layer crossover trims. A frame can
 have its own film, where a folder holds more than one roll, and its own colour balance. Each frame
 carries its print: crop and straighten, exposure, brightness, contrast and split contrast, shadows,
-highlights, blacks and whites, regional colour, pre-flash, detail, dodge and burn, Bloom & Glow.
+highlights, blacks and whites, regional colour, pre-flash, detail, dodge and burn, Bloom & Glow,
+curves.
 
 Settings live in `~/Library/Application Support/FLX Film Convert/library.json`, never next to the
 scans.
 
 The film menus list only the negatives still sold new (`Sources/Core/FilmCatalogue.swift`, checked
 November 2026). A roll or frame set to another keeps it.
+
+Copy Print Settings takes a frame's print (`FrameSettings.printOnly`), and Paste puts it on another
+(`FrameSettings.withPrint(of:)`): everything but the frame's own film and picked rebate, which are
+its conversion, and its crop and masks, which belong to the picture alone (FLX Film Lab's paste
+keeps them too). With no undo yet, a frame whose print is not the default is asked about first. The
+self-check's `FLXCONVERT_PASTE_TEST=1` copies a print with every kind of setting and pastes it onto
+a frame on screen, one off it, and one whose question is answered no.
 
 ## The film base
 
@@ -158,6 +169,30 @@ curves blended by smoothstep), after NegPy's. Both work on the print's lightness
 RGB to match, so they change no colour (`Sources/Core/DetailStage.swift`). They run after the print,
 before Bloom & Glow. Sharpness starts at 100%, with a 1-pixel radius and no masking. A fitted
 preview shows little of the sharpening; the loupe shows it at 100%.
+
+## Curves and histogram
+
+FLX Film Lab's, from the engine snapshot: `PrintCurves` (one curve for all three channels,
+then one for each, monotone cubics after Fritsch and Butland, so a curve never overshoots its
+points) sampled into a 4096-step table, and the shader's `apply_curves` and `histogram_rgb`. The
+editor is FLX Film Lab's `CurvesView.swift`, copied into `Sources/App/` with two changes: its channel
+picker redraws only when the channel does, and the graphs follow the appearance (FLX Film Lab is
+always dark; in the light they sit in a light well, with dark lines and the channels multiplied, grey
+where they agree). `PrintStage` runs them as FLX Film Lab's renderer
+does, last of all, after Bloom & Glow: the print is encoded with the output space's transfer curve
+(the sRGB curve for sRGB, Display P3 and Rec. 2020, ProPhoto's 1.8 power), looked up and decoded
+again, so the export, the loupe and the sidebar carry the curves. Straight curves are no pass at
+all. The preview counts the print's 256 values per channel before and after the curves, leaving out
+a levelled frame's empty corners, and is printed in the export's colour space, so both act on what
+the file will hold.
+
+Checked: an export with curves against SciPy's PCHIP applied to the same export without them,
+within 1.4 steps of a 16-bit file; the linear print against the curves' table in sRGB and ProPhoto,
+0.02 steps; the histogram against a count of the same print's pixels in all four output spaces;
+prints without curves, the same to the bit as before; and the editor clicked and dragged as a hand
+would (the self-check's `FLXCONVERT_CURVE_TEST`: add a point, add another, drag one off, pull the
+white end down). On an M4 Pro a slider's round trip stays at 20 ms; the main thread spends about
+1 ms more a change redrawing the two graphs, and memory is as before.
 
 ## The loupe
 

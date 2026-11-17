@@ -14,22 +14,12 @@ using namespace metal;
 // Layout constants — must match Constants.swift
 // ---------------------------------------------------------------------------
 
-constant int NW = 81;            // 380..780 nm at 5 nm, agx SPECTRAL_SHAPE
 constant int NCURVE = 256;       // density-curve samples, agx LOG_EXPOSURE
 constant int COUPLER_OVERSAMPLING = 16;   // the pre-coupler curves' finer grid
 constant int NCURVE0 = (NCURVE - 1) * COUPLER_OVERSAMPLING + 1;
 
-// Offsets into the packed spectral-table buffer
-constant int OFF_FILM_CHANNEL_DENSITY = 0;      // NW*3
-constant int OFF_FILM_BASE_DENSITY    = 243;    // NW
-constant int OFF_FILM_VALID           = 324;    // NW
-constant int OFF_PRINT_ILLUMINANT     = 405;    // NW  (enlarger source x dichroics)
-constant int OFF_PAPER_SENSITIVITY    = 486;    // NW*3
-constant int OFF_PRINT_CHANNEL_DENSITY = 729;   // NW*3
-constant int OFF_PRINT_BASE_DENSITY   = 972;    // NW
-constant int OFF_PRINT_VALID          = 1053;   // NW
-constant int OFF_VIEWING_ILLUMINANT   = 1134;   // NW
-constant int OFF_CMFS                 = 1215;   // NW*3
+// The spectral tables (380..780 nm at 5 nm, agx SPECTRAL_SHAPE) reach
+// print_and_scan packed by band (Renderer.bands), not in this layout.
 
 // ---------------------------------------------------------------------------
 // Uniforms
@@ -57,10 +47,13 @@ struct FilmUniforms {
 
 // One exposure gradient, handles in pixels. ExposureGradientUniform in Swift.
 struct ExposureGradientU {
-    float2 a;                 // the full compensation at and behind a
-    float2 b;                 // none at and past b
+    float2 a;                 // linear: the full compensation at and behind a; oval: its centre
+    float2 b;                 // linear: none at and past b; oval: the end of one axis
+    float2 c;                 // oval: the end of the other axis
     float  ev;
-    float  _p0, _p1, _p2;
+    int    kind;              // 0 linear, 1 oval
+    float  feather;           // oval: the transition, a share of its size
+    int    inverted;          // oval: the compensation outside it
 };
 
 struct DevelopUniforms {
@@ -222,15 +215,32 @@ inline float2 intoTriangle(float2 xy, float2 white) {
 // Stage 1 — filming.expose : working RGB -> film log exposure
 // ---------------------------------------------------------------------------
 
-/// The stacked exposure gradients' compensation in EV at pixel position `p`:
-/// each one's smoothstep along its handles, as the darkroom gradient's, and
-/// the stack summed. ExposureGradient.exposureEV in Recipe.swift is the same
-/// on the CPU.
+/// The stacked exposure gradients' compensation in EV at pixel position `p`,
+/// the stack summed. A linear gradient's is a smoothstep along its handles, as
+/// the darkroom gradient's; an oval's the same smoothstep across its
+/// transition, from the oval shrunk by its feather out to the oval itself,
+/// the other way round when inverted. ExposureGradient.exposureEV in
+/// Recipe.swift is the same on the CPU.
 static float gradientEV(float2 p, constant ExposureGradientU *gradients, int count)
 {
     float ev = 0.0f;
     for (int i = 0; i < count; i++) {
         float2 d = gradients[i].b - gradients[i].a;
+        if (gradients[i].kind == 1) {
+            float2 v = gradients[i].c - gradients[i].a;
+            float det = d.x * v.y - d.y * v.x;
+            if (fabs(det) <= 1e-6f) continue;
+            // The point in the oval's own axes, where the oval is the unit circle.
+            float2 q = p - gradients[i].a;
+            float a = (q.x * v.y - q.y * v.x) / det;
+            float b = (d.x * q.y - d.y * q.x) / det;
+            float r = sqrt(a * a + b * b);
+            float inner = 1.0f - clamp(gradients[i].feather, 0.0f, 1.0f);
+            float t = clamp((r - inner) / max(1.0f - inner, 1e-4f), 0.0f, 1.0f);
+            float w = 1.0f - t * t * (3.0f - 2.0f * t);
+            ev += gradients[i].ev * (gradients[i].inverted != 0 ? 1.0f - w : w);
+            continue;
+        }
         float lengthSquared = dot(d, d);
         if (lengthSquared <= 1e-9f) continue;
         float t = clamp(dot(p - gradients[i].a, d) / lengthSquared, 0.0f, 1.0f);
@@ -403,6 +413,7 @@ struct GrainLayerUniforms {
     uint  monochrome;       // one silver record: every channel draws the same grain
     uint  layer;            // 0 fast, 1 medium, 2 slow
     uint  samples;          // table samples per record
+    uint2 origin;           // the texture's first pixel in the frame (or the print): the loupe's part draws the whole's grains
 };
 
 // One emulsion layer's grain, as a deviation from the clean density.
@@ -415,7 +426,7 @@ kernel void film_grain_layer(texture2d<float, access::read>  clean  [[texture(0)
     if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
     float3 density = clean.read(gid).rgb;
     float3 out;
-    uint pixel = hashCombine(gid.x, gid.y);
+    uint pixel = hashCombine(gid.x + u.origin.x, gid.y + u.origin.y);
     float shared = 0.0f;
     for (int c = 0; c < 3; ++c) {
         float x = clamp(max(density[c], 0.0f) / max(u.tableTop[c], 1e-4f), 0.0f, 1.0f) * float(u.samples - 1);
@@ -615,19 +626,31 @@ inline float3 compressGamut(float3 rgb, constant PrintUniforms &u) {
     return u.gamutLMSToRGB * oklabToLMS(float3(Lb, hue * dCompressed * cMax));
 }
 
+// The print stage can keep the light each of its negatives passes in the
+// enlarger, the spectral integral, and print from it again while only the
+// controls after it move: Brightness, Density, Contrast, Shadows, Highlights,
+// preflash, dodging and burning (`Renderer`, the kept exposure). Set by
+// function constants: with both false, the kernel is the plain one.
+constant bool keepsExposure [[function_constant(0)]];
+constant bool readsKeptExposure [[function_constant(1)]];
+constant bool bindsKeptExposure = keepsExposure || readsKeptExposure;
+
 kernel void print_and_scan(texture2d<float, access::read>  cmyFilm    [[texture(0)]],
                            texture2d<float, access::write> dst        [[texture(1)]],
                            texture2d<float, access::read>  toneLut    [[texture(2)]],
                            texture2d<float>                dodgeBurn  [[texture(3)]],
-                           constant float *tables                     [[buffer(0)]],
+                           constant float4 *bands                     [[buffer(0)]],
                            constant PrintUniforms &u                  [[buffer(1)]],
                            constant float *toneShift                  [[buffer(2)]],
                            constant GeometryUniforms &shape           [[buffer(3)]],
+                           constant int2 &bandCount                   [[buffer(4)]],
+                           device float *keptExposure                 [[buffer(5), function_constant(bindsKeptExposure)]],
                            uint2 gid                                  [[thread_position_in_grid]])
 {
     if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;
 
-    float3 cmy = cmyFilm.read(gid).rgb;
+    // Printing from the kept exposure, the negative is not read at all.
+    float3 cmy = readsKeptExposure ? float3(0.0f) : cmyFilm.read(gid).rgb;
 
     // The map is smaller than the frame (feathered masks are low-frequency) and
     // is sampled bilinearly, so it costs the same at any output resolution.
@@ -653,19 +676,30 @@ kernel void print_and_scan(texture2d<float, access::read>  cmyFilm    [[texture(
         float stops = log2(max(u.printExposure, 1e-6f)) + db.x;
         toneInput = cmy + stops * 0.30103f;
     } else {
-        // ---- printing.expose : 81-band integral through the negative -------
+        // ---- printing.expose : spectral integral through the negative -------
+        // Over the bands the film's tables are finite in: agx zeroes the
+        // transmittance in the others, and `bands` leaves them out.
         float3 raw = float3(0.0f);
-        for (int l = 0; l < NW; ++l) {
-            float valid = tables[OFF_FILM_VALID + l];
-            if (valid == 0.0f) continue;              // agx zeroes non-finite transmittance
-            float dSpec = cmy.x * tables[OFF_FILM_CHANNEL_DENSITY + l * 3 + 0]
-                        + cmy.y * tables[OFF_FILM_CHANNEL_DENSITY + l * 3 + 1]
-                        + cmy.z * tables[OFF_FILM_CHANNEL_DENSITY + l * 3 + 2]
-                        + tables[OFF_FILM_BASE_DENSITY + l];
-            float light = exp10(-dSpec) * tables[OFF_PRINT_ILLUMINANT + l];
-            raw.x += light * tables[OFF_PAPER_SENSITIVITY + l * 3 + 0];
-            raw.y += light * tables[OFF_PAPER_SENSITIVITY + l * 3 + 1];
-            raw.z += light * tables[OFF_PAPER_SENSITIVITY + l * 3 + 2];
+        uint kept = (gid.y * dst.get_width() + gid.x) * 3;
+        if (readsKeptExposure) {
+            raw = float3(keptExposure[kept], keptExposure[kept + 1], keptExposure[kept + 2]);
+        } else {
+            for (int i = 0; i < bandCount.x; ++i) {
+                float4 d = bands[2 * i], s = bands[2 * i + 1];
+                float dSpec = cmy.x * d.x
+                            + cmy.y * d.y
+                            + cmy.z * d.z
+                            + d.w;
+                float light = exp10(-dSpec) * s.x;
+                raw.x += light * s.y;
+                raw.y += light * s.z;
+                raw.z += light * s.w;
+            }
+            if (keepsExposure) {
+                keptExposure[kept] = raw.x;
+                keptExposure[kept + 1] = raw.y;
+                keptExposure[kept + 2] = raw.z;
+            }
         }
         raw *= u.exposureFactorMidgray;
         raw += u.preflashRaw;
@@ -720,17 +754,17 @@ kernel void print_and_scan(texture2d<float, access::read>  cmyFilm    [[texture(
 
     // ---- scanning.scan : print dyes under the viewing illuminant -----------
     float3 xyz = float3(0.0f);
-    for (int l = 0; l < NW; ++l) {
-        float valid = tables[OFF_PRINT_VALID + l];
-        if (valid == 0.0f) continue;
-        float dSpec = cmyPrint.x * tables[OFF_PRINT_CHANNEL_DENSITY + l * 3 + 0]
-                    + cmyPrint.y * tables[OFF_PRINT_CHANNEL_DENSITY + l * 3 + 1]
-                    + cmyPrint.z * tables[OFF_PRINT_CHANNEL_DENSITY + l * 3 + 2]
-                    + tables[OFF_PRINT_BASE_DENSITY + l];
-        float light = exp10(-dSpec) * tables[OFF_VIEWING_ILLUMINANT + l];
-        xyz.x += light * tables[OFF_CMFS + l * 3 + 0];
-        xyz.y += light * tables[OFF_CMFS + l * 3 + 1];
-        xyz.z += light * tables[OFF_CMFS + l * 3 + 2];
+    constant float4 *printBands = bands + 2 * bandCount.x;
+    for (int i = 0; i < bandCount.y; ++i) {
+        float4 d = printBands[2 * i], s = printBands[2 * i + 1];
+        float dSpec = cmyPrint.x * d.x
+                    + cmyPrint.y * d.y
+                    + cmyPrint.z * d.z
+                    + d.w;
+        float light = exp10(-dSpec) * s.x;
+        xyz.x += light * s.y;
+        xyz.y += light * s.z;
+        xyz.z += light * s.w;
     }
     xyz /= u.cmfNormalization;
 
@@ -858,4 +892,88 @@ kernel void encode_display(texture2d<float, access::read>  src   [[texture(0)]],
         a = clamp(inside + 0.5f, 0.0f, 1.0f);
     }
     dst.write(float4(clamp(c, 0.0f, 1.0f) * a, a), gid);
+}
+
+// ---------------------------------------------------------------------------
+// Curves and histogram — on the print as its file encodes it
+// ---------------------------------------------------------------------------
+
+// The output space's transfer curve, as `encode_display` and
+// `Exporter.transferFunction` apply it: 1 the sRGB piecewise curve (sRGB,
+// Display P3, Rec.2020), 2 ProPhoto's power.
+static float3 encodeOutput(float3 c, int encoding)
+{
+    if (encoding == 2) return pow(c, 1.0f / 1.80078125f);
+    return select(1.055f * pow(c, 1.0f / 2.4f) - 0.055f, c * 12.92f, c <= 0.0031308f);
+}
+
+static float3 decodeOutput(float3 e, int encoding)
+{
+    if (encoding == 2) return pow(e, 1.80078125f);
+    return select(pow((e + 0.055f) / 1.055f, 2.4f), e / 12.92f, e <= 0.04045f);
+}
+
+// The curves (`PrintCurves.table`), on the finished linear print: each
+// channel encoded as the file will be, looked up in its table between the two
+// nearest samples, and decoded back to linear light, so the export and the
+// screen both carry them.
+kernel void apply_curves(texture2d<float, access::read_write> print [[texture(0)]],
+                         device const float *table                 [[buffer(0)]],   // [channel][size]
+                         constant int2 &encodingSize               [[buffer(1)]],   // encoding, size
+                         uint2 gid                                 [[thread_position_in_grid]])
+{
+    if (gid.x >= print.get_width() || gid.y >= print.get_height()) return;
+    float4 p = print.read(gid);
+    float3 e = clamp(encodeOutput(max(p.rgb, 0.0f), encodingSize.x), 0.0f, 1.0f);
+    int n = encodingSize.y;
+    float3 o;
+    for (int c = 0; c < 3; c++) {
+        float x = e[c] * float(n - 1);
+        int i = min(int(x), n - 2);
+        float t = x - float(i);
+        o[c] = mix(table[c * n + i], table[c * n + i + 1], t);
+    }
+    p.rgb = decodeOutput(o, encodingSize.x);
+    print.write(p, gid);
+}
+
+// The print's histogram: how many pixels hold each of the 256 values an 8-bit
+// file would, per channel, red's 256 bins, then green's, then blue's. Counted
+// per threadgroup first, then added up, so the device-wide atomics are few.
+// With `coverage` 1, the parts of a levelled frame outside it are not counted.
+kernel void histogram_rgb(texture2d<float, access::read> src  [[texture(0)]],
+                          device atomic_uint *bins            [[buffer(0)]],
+                          constant int &encoding              [[buffer(1)]],
+                          constant int &coverage              [[buffer(2)]],
+                          constant GeometryUniforms &shape    [[buffer(3)]],
+                          uint2 gid                           [[thread_position_in_grid]],
+                          uint lid                            [[thread_index_in_threadgroup]],
+                          uint2 groupSize                     [[threads_per_threadgroup]])
+{
+    threadgroup atomic_uint local[768];
+    uint threads = groupSize.x * groupSize.y;
+    for (uint i = lid; i < 768; i += threads) atomic_store_explicit(&local[i], 0u, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (gid.x < src.get_width() && gid.y < src.get_height()) {
+        bool counted = true;
+        if (coverage == 1) {
+            float2 o = float2(gid) + 0.5f;
+            float2 s = shape.column0 * o.x + shape.column1 * o.y + shape.offset;
+            float inside = min(min(s.x, s.y), min(shape.sourceSize.x - s.x, shape.sourceSize.y - s.y));
+            counted = inside + 0.5f >= 0.5f;
+        }
+        if (counted) {
+            float3 e = clamp(encodeOutput(max(src.read(gid).rgb, 0.0f), encoding), 0.0f, 1.0f);
+            uint3 b = uint3(e * 255.0f + 0.5f);
+            atomic_fetch_add_explicit(&local[b.x], 1u, memory_order_relaxed);
+            atomic_fetch_add_explicit(&local[256 + b.y], 1u, memory_order_relaxed);
+            atomic_fetch_add_explicit(&local[512 + b.z], 1u, memory_order_relaxed);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = lid; i < 768; i += threads) {
+        uint v = atomic_load_explicit(&local[i], memory_order_relaxed);
+        if (v != 0) atomic_fetch_add_explicit(&bins[i], v, memory_order_relaxed);
+    }
 }

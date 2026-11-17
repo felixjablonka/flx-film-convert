@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.3.0 (2026-11-17)
+
+Histogram and curves, copy and paste of print settings, two more films, and FLX Film Lab 2.0.0's engine.
+
+### New
+- **Histogram and curves** at the top of The Print, FLX Film Lab 1.4.0's: an RGB histogram of the
+  finished print as its file will hold it, and point curves for all three channels and for each,
+  on the print after everything else, Bloom & Glow included. Click to add a point, drag it, drag it
+  off the graph to take it away; behind each curve is the histogram of what it is given. They follow
+  the light or dark appearance. Exports, the loupe and the sidebar's prints carry them, and Reset
+  print straightens them. `--curves` in `flxconvert`.
+- **Copy and paste print settings** between frames: **Frame > Copy Print Settings** (⇧⌘C) and
+  **Paste Print Settings** (⇧⌘V), the toolbar's pair, or a frame's right-click in the sidebar, which
+  pastes onto that frame without opening it. The print goes across (The Print, Shadows & Highlights,
+  the frame's colour balance and regional colour, Detail, Bloom & Glow, the curves), the conversion
+  does not: the frame keeps its own film and picked rebate, and, as in FLX Film Lab, its crop and
+  masks. A frame with print settings of its own is asked about first, as there is no undo yet.
+- **Kodak Double-X 5222 and Fujifilm Neopan 100 Acros II** in the film menus. Exports give Double-X
+  its daylight rating, EI 250. Agfa APX 100 and 400 stay out: FLX Film Lab builds them from
+  Agfa-Gevaert's sheets of 1995, and the AgfaPhoto APX sold since 2013 is another film.
+
+### Changed
+- **The engine is FLX Film Lab 2.0.0's**, which brings the curves and the new films. Its print
+  stage packs the spectral tables by band, so a print differs from 0.2.0's by rounding: at most 2
+  steps of a 16-bit file (CIEDE2000 under 0.01) on eight frames across films, papers and controls,
+  and on a frame with local contrast (CLAHE) one pixel 0.23 apart, where it tips a histogram bin.
+  Kodak 2302, the black-and-white release print film, joins the Paper menu, as every print film of
+  FLX Film Lab's does; the Konica films are in the engine but not in the film menus.
+- **The shaders are compiled ahead** where Xcode's Metal compiler is installed (`build.sh`, as FLX
+  Film Lab's), so the first launch no longer compiles them, and the app has a layered **Liquid Glass
+  icon** made in Icon Composer's format and compiled by Xcode's `actool`, with its dark, clear and
+  tinted forms. Builds use the macOS 26.5 SDK the releases are built with, also where Xcode 27 is
+  installed.
+- **The preview is printed in the export's colour space**, as FLX Film Lab's is, so the curves and
+  the histogram act on what the file will hold. On screen, only colours outside sRGB change, where
+  the display can show them.
+
 ## 0.2.0 (2026-11-10)
 
 120 film in its own sizes, a square crop, and memory kept in check on Macs with less of it.

@@ -22,7 +22,7 @@ photographic paper, as it would in a darkroom.
 - **A darkroom print.** The negative is printed on one of FLX Film Lab's papers with its print
   controls: exposure, brightness, contrast and split contrast, shadows and highlights, colour balance
   on the enlarger's filters, regional colour, pre-flash, dodge and burn with graduated, oval and
-  polygon masks, and Bloom & Glow.
+  polygon masks, Bloom & Glow, and point curves over an RGB histogram of the finished print.
 - **A roll at a time.** Film, paper and colour balance are set once for the roll, and a frame can
   have its own. The sidebar shows every frame as a print.
 - **Crop to Picture** levels and crops each frame to the picture's edges, found from the film's
@@ -35,8 +35,8 @@ photographic paper, as it would in a darkroom.
   date and film speed the pictures were taken with.
 
 The film menus list the negatives still sold new: Kodak's Ektar, Gold, Ultramax, Portra, Tri-X,
-T-Max, Vision3 and Verita stocks and Ilford's Delta 100 and 400, FP4 Plus, HP5 Plus, Pan F Plus
-and Ortho Plus.
+T-Max, Double-X, Vision3 and Verita stocks, Ilford's Delta 100 and 400, FP4 Plus, HP5 Plus, Pan F
+Plus and Ortho Plus, and Fujifilm's Neopan 100 Acros II.
 
 ![The scan itself, with the two strips of rebate the film base is measured on](docs/images/scan.jpg)
 
@@ -78,8 +78,13 @@ That makes `FLX Film Convert.app` here, and `build/flxconvert`, the command-line
 `./build.sh dmg` also packages `build/FLX Film Convert.dmg`. Quit the app before building it again: a
 bundle replaced under a running app breaks its Open and Save panels, so `build.sh` refuses.
 
-`engine/` holds a snapshot of FLX Film Lab's engine, from the release `engine/VERSION` names (1.3.0),
-with the Ilford stocks 1.4.0 added (`engine/SNAPSHOT` names the commit).
+With Xcode installed as well, `build.sh` compiles the shaders ahead with its Metal compiler
+(`xcodebuild -downloadComponent MetalToolchain` fetches it) and the layered icon with `actool`;
+without them, the shaders compile as the app starts and the icon is the flat one. It builds with
+the macOS 26.5 SDK, as the releases are, wherever that is installed (`RELEASE_SDK=` picks another).
+
+`engine/` holds a snapshot of FLX Film Lab's engine, from the release `engine/VERSION` names (2.0.0;
+`engine/SNAPSHOT` names the commit).
 To build on a newer FLX Film Lab, run `./sync-engine.sh PATH`, with PATH a checkout of it.
 
 ## Scanning
@@ -105,8 +110,10 @@ To build on a newer FLX Film Lab, run `./sync-engine.sh PATH`, with PATH a check
 4. The **Export** tab holds what the pictures were shot with, and **Export Frame** (⌘E) or
    **Export Roll** (⇧⌘E) writes JPEG or 16-bit TIFF files.
 
-A double-click on a slider puts it back, each section has a reset link, and **Frame > Reset Frame**
-(⌥⌘R) starts a frame over. There is no undo yet.
+**Frame > Copy Print Settings** (⇧⌘C) and **Paste Print Settings** (⇧⌘V) carry one frame's print
+to another, also from a frame's right-click in the sidebar; the frame keeps its film, rebate, crop
+and masks. A double-click on a slider puts it back, each section has a reset link, and **Frame >
+Reset Frame** (⌥⌘R) starts a frame over. There is no undo yet.
 
 ## Command line
 
@@ -116,7 +123,9 @@ build/flxconvert scan.NEF print.jpg --film kodak_portra_400
 
 Options: `--paper STOCK`, `--format 135|645|66|67|68|69`, `--exposure STOPS`, `--grade R`, `--filter-y CC`, `--filter-m CC`,
 `--pick x0,x1,y0,y1` (a rebate picked by hand, in frame fractions), `--turns N`, `--size PX`,
-`--sharpness K` (1 is 100%, the default), `--radius PX`, `--masking 0-1`, `--clahe 0-1`, and for the metadata `--camera`,
+`--sharpness K` (1 is 100%, the default), `--radius PX`, `--masking 0-1`, `--clahe 0-1`,
+`--curves SPEC` (each channel its name and its points on the 0-255 scale,
+`"rgb:0,0 64,48 192,212 255,255;blue:0,12 255,255"`), and for the metadata `--camera`,
 `--lens`, `--date YYYY-MM-DD`, `--ei N` and `--notes`. `flxconvert --read-metadata FILE` shows what a
 file says about itself.
 

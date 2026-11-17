@@ -388,7 +388,7 @@ enum ToneCurve {
         var data = [Float](repeating: 0, count: w * h * 4)
         let anyMaskGrade = recipe.masks.contains { $0.enabled && $0.grade != 0 }
 
-        for row in 0..<h {
+        for row in 0..<(anyMaskGrade ? h : 1) {
             let localGrade: Float = anyMaskGrade
                 ? Constants.localGradeMin
                     + (Constants.localGradeMax - Constants.localGradeMin) * Float(row) / Float(h - 1)
@@ -404,7 +404,15 @@ enum ToneCurve {
                 data[base + 3] = 1
             }
         }
+        if !anyMaskGrade { copyFirstRow(&data, width: w, height: h) }
         return (data, g)
+    }
+
+    /// The rows of a tone table differ only in a mask's local grade: without
+    /// one, every row is the first, worked out once and copied.
+    private static func copyFirstRow(_ data: inout [Float], width w: Int, height h: Int) {
+        let first = Array(data[0..<w * 4])
+        for row in 1..<h { data.replaceSubrange(row * w * 4..<(row + 1) * w * 4, with: first) }
     }
 
     // MARK: - Transparency
@@ -454,7 +462,7 @@ enum ToneCurve {
         var data = [Float](repeating: 0, count: w * h * 4)
         let anyMaskGrade = recipe.masks.contains { $0.enabled && $0.grade != 0 }
 
-        for row in 0..<h {
+        for row in 0..<(anyMaskGrade ? h : 1) {
             let localGrade: Float = anyMaskGrade
                 ? Constants.localGradeMin
                     + (Constants.localGradeMax - Constants.localGradeMin) * Float(row) / Float(h - 1)
@@ -473,28 +481,8 @@ enum ToneCurve {
                 data[base + 3] = 1
             }
         }
+        if !anyMaskGrade { copyFirstRow(&data, width: w, height: h) }
         return (data, g, (start, step))
-    }
-
-    /// Samples for the inspector's characteristic-curve plot: the same LUT the
-    /// GPU reads plus the same neutral shift, so the plot cannot disagree with
-    /// the render.
-    static func plotSamples(paper: ProfilePack, recipe: Recipe, count: Int = 192)
-        -> [(logExposure: Float, density: SIMD3<Float>)] {
-        let g = geometry(paper: paper)
-        let shift = neutralShift(geometry: g, recipe: recipe)
-        let logE0 = paper.logExposureStart
-        let logE1 = paper.logExposure[paper.logExposure.count - 1]
-        return (0..<count).map { i in
-            let x = logE0 + (logE1 - logE0) * Float(i) / Float(count - 1)
-            var d = SIMD3<Float>(repeating: 0)
-            for c in 0..<3 {
-                d[c] = density(paper: paper, recipe: recipe, geometry: g,
-                               channel: c, logExposure: x, localGrade: 0)
-            }
-            if let shift { d += shift.sample((d.x + d.y + d.z) / 3) }
-            return (x, d)
-        }
     }
 
     // MARK: - Neutral shift

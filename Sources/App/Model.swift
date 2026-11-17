@@ -67,6 +67,9 @@ final class Pipeline {
         var generation: Int
         /// What the sidebar's print of these settings is cached under.
         var thumbKey = ""
+        /// The export's colour space: the preview is printed in it, so the
+        /// curves and the histogram act on what the file will hold.
+        var outputColorSpace = "sRGB"
     }
     struct Output {
         var generation: Int
@@ -78,6 +81,8 @@ final class Pipeline {
         var thumbnail: CGImage?
         var thumbKey = ""
         var error: String?
+        /// The print's histogram, before and after its curves.
+        var histogram: PrintHistogram?
     }
 
     static let previewSize = 2048
@@ -241,13 +246,15 @@ final class Pipeline {
             lap("dyes")
             let printed = try converter.print(negative: negative, width: scan.width, height: scan.height,
                                               roll: r.roll, frame: r.frame, wholeFrame: r.wholeFrame, forDisplay: true,
-                                              detailScale: detailScale(r.url, scan))
+                                              detailScale: detailScale(r.url, scan),
+                                              outputColorSpace: r.outputColorSpace, histogram: true)
             curves["\(r.url.path)|\(r.wholeFrame)"] = printed.curves
             lap("print")
             out.map = printed.map
+            out.histogram = printed.histogram
             out.image = printed.display.flatMap {
                 Pipeline.image($0, width: printed.width, height: printed.height,
-                               space: CGColorSpace(name: CGColorSpace.sRGB)!)
+                               space: Renderer.cgColorSpace(named: r.outputColorSpace))
             }
             lap("image")
             // The sidebar's thumbnail only once a slider has settled: not while
@@ -283,6 +290,7 @@ final class Pipeline {
         var width: Int
         var height: Int
         var generation: Int
+        var outputColorSpace = "sRGB"
     }
     struct LoupeOutput {
         var generation: Int
@@ -400,7 +408,7 @@ final class Pipeline {
                 loupePart = (key, cmy)
             }
             lap("dyes")
-            let recipe = Recipe.forPrint(roll: r.roll, frame: r.frame)
+            let recipe = Recipe.forPrint(roll: r.roll, frame: r.frame, outputColorSpace: r.outputColorSpace)
             let setup = try RenderSetupBuilder.build(recipe: recipe, exposureEV: 0)
             let printed = try converter.printStage.printRegion(
                 negative: loupePart!.cmy, width: box.width, height: box.height,
@@ -417,7 +425,7 @@ final class Pipeline {
                 let src = ((wy + y) * rw + wx) * 4
                 window.replaceSubrange((y * w * 4)..<((y + 1) * w * 4), with: printed.display[src..<(src + w * 4)])
             }
-            out.image = Pipeline.image(window, width: w, height: h, space: CGColorSpace(name: CGColorSpace.sRGB)!)
+            out.image = Pipeline.image(window, width: w, height: h, space: Renderer.cgColorSpace(named: r.outputColorSpace))
         } catch {
             out.error = "\(error)"
         }
@@ -519,6 +527,9 @@ enum ExportFormat: String, CaseIterable, Identifiable {
 final class Preview {
     var image: CGImage? { didSet { onImage?() } }
     var rendering = false
+    /// The print's histogram, before and after its curves: watched by the
+    /// histogram and the curves alone.
+    var histogram: PrintHistogram?
     /// Called when a print arrives (the self-check's sweep).
     @ObservationIgnored var onImage: (() -> Void)?
 }
@@ -550,7 +561,16 @@ final class ConvertModel {
             if !loading { scheduleThumbnails() }
         }
     }
-    var frame = FrameSettings() { didSet { if frame != oldValue { settingsChanged() } } }
+    var frame = FrameSettings() {
+        didSet {
+            curvesNow = frame.curves
+            if frame != oldValue { settingsChanged() }
+        }
+    }
+    /// The frame's curves, read without being watched: the curves editor
+    /// reads them back within a gesture, and watching `frame` there would
+    /// redraw it whenever any slider moves.
+    @ObservationIgnored private(set) var curvesNow: PrintCurves?
     let preview = Preview()
     let thumbnails = Thumbnails()
     /// What the roll was shot with, and this frame's own lens and date: only
@@ -618,7 +638,8 @@ final class ConvertModel {
     var isLevelling = false { didSet { if isLevelling { isCropping = true } } }
     var exportFormat: ExportFormat = .jpeg
     var exportSize = 0                  // long edge in pixels; 0 is the camera's full size
-    var outputColorSpace = "sRGB"
+    /// The export's colour space, which the preview is printed in too.
+    var outputColorSpace = "sRGB" { didSet { if outputColorSpace != oldValue { render() } } }
     var exportStatus: String?
 
     /// The film menus: the stocks still on sale (`FilmCatalogue`), and the
@@ -844,6 +865,7 @@ final class ConvertModel {
         var request = Pipeline.Request(url: url, roll: effectiveRoll, frame: frame, showScan: showScan,
                                        wholeFrame: isCropping || tool == .pickRebate, generation: generation)
         if !showScan { request.thumbKey = ThumbnailCache.key(url, roll: effectiveRoll, frame: frame) }
+        request.outputColorSpace = outputColorSpace
         pipeline.submit(request) { [weak self] out in
             guard let self else { return }
             if let thumb = out.thumbnail, !out.thumbKey.isEmpty {
@@ -854,6 +876,7 @@ final class ConvertModel {
             guard out.generation == self.generation else { return }
             self.preview.rendering = false
             self.preview.image = out.image
+            if self.preview.histogram != out.histogram { self.preview.histogram = out.histogram }
             // The rest only when it changed, so the inspector redraws only then.
             if !Self.same(self.displayMap, out.map) { self.displayMap = out.map }
             if self.field != out.field { self.field = out.field }
@@ -885,7 +908,7 @@ final class ConvertModel {
         let request = Pipeline.LoupeRequest(url: url, roll: effectiveRoll, frame: frame,
                                             wholeFrame: isCropping || tool == .pickRebate, centre: loupeCentre,
                                             width: loupePixels.width, height: loupePixels.height,
-                                            generation: loupeGeneration)
+                                            generation: loupeGeneration, outputColorSpace: outputColorSpace)
         pipeline.loupe(request) { [weak self] out in
             guard let self, self.loupeOn, out.url == self.selection else { return }
             self.loupeLoading = false
@@ -910,12 +933,14 @@ final class ConvertModel {
     var printIsDefault: Bool {
         let d = Self.blank
         return frame.exposure == d.exposure && frame.brightness == d.brightness && frame.grade == nil
-            && frame.shadowGrade == d.shadowGrade && frame.highlightGrade == d.highlightGrade
+            && frame.shadowGrade == d.shadowGrade && frame.highlightGrade == d.highlightGrade && frame.curves == nil
     }
+    /// The print's controls back to where they start, the curves straight.
     func resetPrint() {
         let d = Self.blank
         frame.exposure = d.exposure; frame.brightness = d.brightness; frame.grade = nil
         frame.shadowGrade = d.shadowGrade; frame.highlightGrade = d.highlightGrade
+        frame.curves = nil
     }
 
     var toneIsDefault: Bool {
@@ -983,6 +1008,63 @@ final class ConvertModel {
     func resetCrossover() {
         roll.gradeTrim = .zero; roll.toeTrim = .zero; roll.shoulderTrim = .zero; roll.snapTrim = .zero
     }
+
+    // MARK: Copy and paste
+
+    /// A frame's print settings, copied (`FrameSettings.printOnly`), and the
+    /// frame they came from.
+    struct CopiedPrint: Equatable {
+        var settings: FrameSettings
+        var source: String
+    }
+    var copiedPrint: CopiedPrint?
+
+    /// A frame's settings: the one on screen as it is, the others as kept.
+    func settings(of url: URL) -> FrameSettings {
+        url == selection ? frame : (library.frames[url.path] ?? FrameSettings())
+    }
+
+    /// Keeps settings for a frame not on screen (the self-check's paste test).
+    func store(_ settings: FrameSettings, for url: URL) {
+        guard url != selection else { frame = settings; return }
+        library.frames[url.path] = settings
+    }
+
+    /// Copies the print settings of `url`'s frame, or the one on screen.
+    func copyPrintSettings(from url: URL? = nil) {
+        guard let url = url ?? selection else { return }
+        copiedPrint = CopiedPrint(settings: settings(of: url).printOnly,
+                                  source: url.deletingPathExtension().lastPathComponent)
+    }
+
+    /// Puts the copied print settings on `url`'s frame, or the one on screen,
+    /// which keeps its film, rebate, crop and masks. A frame with print
+    /// settings of its own is asked about first: there is no undo yet.
+    func pastePrintSettings(to url: URL? = nil) {
+        guard let copied = copiedPrint, let url = url ?? selection else { return }
+        let before = settings(of: url)
+        let after = before.withPrint(of: copied.settings)
+        guard after != before else { return }
+        let name = url.deletingPathExtension().lastPathComponent
+        if before.printOnly != Self.blank {
+            let yes = pasteAnswers ?? confirm("Paste \(copied.source)'s print settings onto \(name)?",
+                detail: "Its print, tone, colour balance, detail, Bloom & Glow and curves become \(copied.source)'s. Its film, rebate, crop and masks stay.",
+                button: "Paste")
+            guard yes else { return }
+        }
+        if url == selection {
+            frame = after
+        } else {
+            library.frames[url.path] = after
+            let own = Self.note(after)
+            if frameNotes[url] != own { frameNotes[url] = own }
+            scheduleSave()
+            scheduleThumbnails()
+        }
+    }
+
+    /// The answer the self-check's paste test gives in place of the question.
+    @ObservationIgnored var pasteAnswers: Bool?
 
     /// There is no undo yet, so the resets that throw away work ask first.
     private func confirm(_ message: String, detail: String, button: String) -> Bool {
